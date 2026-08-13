@@ -1,0 +1,98 @@
+# Diversos
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# IntelliJ / Android Studio
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# A pasta .vscode guarda configuracoes de launch e tasks que voce talvez queira
+# versionar, por isso a linha abaixo fica comentada por padrao.
+#.vscode/
+
+# Flutter/Dart/Pub
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+/coverage/
+coverage/
+lcov.info
+
+# Codigo gerado (build_runner)
+*.g.dart
+*.freezed.dart
+*.mocks.dart
+
+# Symbolication
+app.*.symbols
+
+# Ofuscacao
+app.*.map.json
+
+# Segredos e credenciais
+# O app procura o JSON que o Google Cloud entrega; nenhum deles entra no repo.
+client_secret*.json
+credentials.json
+token.json
+service-account*.json
+*.pem
+*.p12
+.env
+.env.*
+!.env.example
+
+# Android
+/android/app/debug
+/android/app/profile
+/android/app/release
+/android/key.properties
+*.jks
+*.keystore
+
+# iOS/macOS
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/flutter_assets/
+**/ios/Podfile.lock
+**/ios/Pods/
+**/ios/.symlinks/
+**/macos/Flutter/ephemeral/
+**/macos/Pods/
+**/macos/Podfile.lock
+
+# Windows / Linux (desktop)
+**/windows/flutter/ephemeral/
+**/linux/flutter/ephemeral/
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.obj
+
+# Web
+/web/.dart_tool/
