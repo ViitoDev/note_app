@@ -351,6 +351,9 @@ class NoteEditorState extends State<NoteEditor> {
         return _continuarLista();
       }
       if (tecla == LogicalKeyboardKey.backspace) return _apagarMarcador();
+      if (tecla == LogicalKeyboardKey.tab) {
+        return _tabular(remover: HardwareKeyboard.instance.isShiftPressed);
+      }
       return KeyEventResult.ignored;
     }
 
@@ -434,6 +437,86 @@ class NoteEditorState extends State<NoteEditor> {
     _controller.value = TextEditingValue(
       text: texto.replaceRange(cursor, cursor, novo),
       selection: TextSelection.collapsed(offset: cursor + novo.length),
+    );
+    return KeyEventResult.handled;
+  }
+
+  /// Um nivel de recuo.
+  ///
+  /// Dois espaços, e nao quatro nem um tab: e o minimo que o Markdown exige
+  /// para aninhar um item debaixo de `- `, e o que o proprio preview usa para
+  /// decidir o que e sublista. Um tab de verdade no arquivo faria a mesma nota
+  /// aninhar de um jeito aqui e de outro em qualquer editor com largura de tab
+  /// diferente.
+  static const _recuo1 = '  ';
+
+  /// Tab recua, Shift+Tab desrecua — como em qualquer editor de codigo.
+  ///
+  /// Com texto selecionado, ou com o cursor dentro de um item de lista, o
+  /// movimento e da linha inteira: e o que aninha o item debaixo do anterior.
+  /// No meio de um paragrafo comum, Tab so escreve o recuo onde o cursor esta.
+  KeyEventResult _tabular({required bool remover}) {
+    final selecao = _controller.selection;
+    if (!selecao.isValid) return KeyEventResult.ignored;
+
+    final texto = _controller.text;
+    final linha = _linhaAteOCursor();
+    final emLista = linha != null && _marcador.hasMatch(linha.texto);
+
+    if (selecao.isCollapsed && !remover && !emLista) {
+      final novo = texto.replaceRange(selecao.start, selecao.start, _recuo1);
+      _controller.value = TextEditingValue(
+        text: novo,
+        selection: TextSelection.collapsed(
+          offset: selecao.start + _recuo1.length,
+        ),
+      );
+      return KeyEventResult.handled;
+    }
+
+    final primeira = selecao.start == 0
+        ? 0
+        : texto.lastIndexOf('\n', selecao.start - 1) + 1;
+    final quebra = texto.indexOf('\n', selecao.end);
+    final ultima = quebra < 0 ? texto.length : quebra;
+
+    final linhas = texto.substring(primeira, ultima).split('\n');
+    final novas = <String>[];
+    var deltaDaPrimeira = 0;
+    var deltaTotal = 0;
+
+    for (var i = 0; i < linhas.length; i++) {
+      final atual = linhas[i];
+      final String nova;
+      if (remover) {
+        // Aceita tab de arquivos vindos de fora, e um espaço so quando e o
+        // que existe — desrecuar tem que funcionar mesmo com recuo torto.
+        final sobra = RegExp(r'^(\t| {1,2})').firstMatch(atual);
+        nova = sobra == null ? atual : atual.substring(sobra.end);
+      } else {
+        // Linha em branco no meio de um bloco selecionado nao ganha recuo:
+        // seria espaço solto no fim da linha, invisivel e a toa.
+        nova = atual.isEmpty && linhas.length > 1 ? atual : '$_recuo1$atual';
+      }
+
+      final delta = nova.length - atual.length;
+      if (i == 0) deltaDaPrimeira = delta;
+      deltaTotal += delta;
+      novas.add(nova);
+    }
+
+    if (deltaTotal == 0) return KeyEventResult.handled;
+
+    _controller.value = TextEditingValue(
+      text: texto.replaceRange(primeira, ultima, novas.join('\n')),
+      selection: selecao.isCollapsed
+          ? TextSelection.collapsed(
+              offset: math.max(primeira, selecao.start + deltaDaPrimeira),
+            )
+          : TextSelection(
+              baseOffset: math.max(primeira, selecao.start + deltaDaPrimeira),
+              extentOffset: math.max(primeira, selecao.end + deltaTotal),
+            ),
     );
     return KeyEventResult.handled;
   }

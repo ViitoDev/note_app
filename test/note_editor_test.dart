@@ -697,6 +697,127 @@ void main() {
     });
   });
 
+  group('Tab recua como numa IDE', () {
+    Future<TextEditingController> montar(WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.dark,
+          home: Scaffold(
+            body: NoteEditor(
+              note: Note.parse('/vault/n.md', ''),
+              onSave: (_) async {},
+              onDirtyChanged: (_) {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return tester
+          .widget<TextField>(find.byType(TextField).first)
+          .controller!;
+    }
+
+    Future<void> tab(WidgetTester tester, {bool shift = false}) async {
+      if (shift) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      if (shift) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('no meio do texto, escreve o recuo no cursor', (tester) async {
+      final campo = await montar(tester);
+      await tester.enterText(find.byType(TextField).first, 'Texto');
+      await tester.pumpAndSettle();
+
+      await tab(tester);
+
+      expect(campo.text, 'Texto  ');
+      expect(campo.selection.baseOffset, campo.text.length);
+    });
+
+    testWidgets('num item de lista, aninha a linha inteira', (tester) async {
+      final campo = await montar(tester);
+      await tester.enterText(find.byType(TextField).first, '- Um\n- Dois');
+      await tester.pumpAndSettle();
+
+      // Cursor no fim do segundo item, e nao no começo da linha.
+      await tab(tester);
+
+      expect(campo.text, '- Um\n  - Dois');
+      // O cursor anda junto com o texto que ele estava acompanhando.
+      expect(campo.selection.baseOffset, campo.text.length);
+    });
+
+    testWidgets('Shift+Tab desfaz o aninhamento', (tester) async {
+      final campo = await montar(tester);
+      await tester.enterText(find.byType(TextField).first, '- Um\n  - Dois');
+      await tester.pumpAndSettle();
+
+      await tab(tester, shift: true);
+
+      expect(campo.text, '- Um\n- Dois');
+    });
+
+    testWidgets('Shift+Tab numa linha sem recuo nao mexe em nada', (
+      tester,
+    ) async {
+      final campo = await montar(tester);
+      await tester.enterText(find.byType(TextField).first, '- Um');
+      await tester.pumpAndSettle();
+
+      await tab(tester, shift: true);
+
+      expect(campo.text, '- Um');
+    });
+
+    testWidgets('com varias linhas selecionadas, recua todas', (tester) async {
+      final campo = await montar(tester);
+      await tester.enterText(
+        find.byType(TextField).first,
+        '- Um\n- Dois\n- Tres',
+      );
+      await tester.pumpAndSettle();
+
+      // Selecao do meio da primeira linha ate o meio da terceira.
+      campo.selection = const TextSelection(baseOffset: 3, extentOffset: 14);
+      await tester.pumpAndSettle();
+      await tab(tester);
+
+      expect(campo.text, '  - Um\n  - Dois\n  - Tres');
+    });
+
+    testWidgets('linha em branco no meio da selecao nao ganha espaço solto', (
+      tester,
+    ) async {
+      final campo = await montar(tester);
+      await tester.enterText(find.byType(TextField).first, '- Um\n\n- Dois');
+      await tester.pumpAndSettle();
+
+      campo.selection = const TextSelection(baseOffset: 0, extentOffset: 11);
+      await tester.pumpAndSettle();
+      await tab(tester);
+
+      expect(campo.text, '  - Um\n\n  - Dois');
+    });
+
+    testWidgets('Tab nao tira mais o foco do campo', (tester) async {
+      // Antes disto, Tab passava o foco adiante e nao escrevia nada: a tecla
+      // era do sistema de navegaçao, nao do texto.
+      final campo = await montar(tester);
+      await tester.enterText(find.byType(TextField).first, 'Texto');
+      await tester.pumpAndSettle();
+
+      await tab(tester);
+      await tab(tester);
+
+      expect(campo.text, 'Texto    ');
+    });
+  });
+
   group('os dois lados acompanham a mesma parte da nota', () {
     testWidgets('rolar o texto leva o preview junto', (tester) async {
       tester.view.physicalSize = const Size(1200, 700);
