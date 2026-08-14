@@ -69,6 +69,10 @@ dependencies:
   win32: ^6.4.0
   ffi: ^2.2.0
   crypto: ^3.0.7
+  # Tokenizador de codigo, para o realce dos blocos ``` no preview. E so o
+  # nucleo: as linguagens vem uma a uma, importadas em `realce_de_codigo.dart`,
+  # entao o app nao carrega as quase duzentas gramaticas do pacote.
+  highlight: ^0.7.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

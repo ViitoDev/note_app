@@ -1,3 +1,5 @@
+import 'package:markdown/markdown.dart' as md;
+
 import 'wikilink.dart';
 
 /// O que o preview faz com o texto da nota antes de desenha-lo.
@@ -7,6 +9,58 @@ import 'wikilink.dart';
 abstract final class PreviewMarkdown {
   static String preparar(String corpo) =>
       Wikilink.paraMarkdown(_linhaEmBranco(_saidaDaLista(_itemVazio(corpo))));
+
+  /// De cada bloco ``` para a linguagem escrita na cerca dele.
+  ///
+  /// Quem desenha o bloco recebe so o texto de dentro dele, sem a cerca — e
+  /// portanto sem a linguagem. Este mapa faz a ponte, e e montado pelo mesmo
+  /// parser que desenha o preview: a chave sai exatamente igual ao texto que
+  /// vai chegar la, sem depender de recontar recuo ou fim de linha na mao.
+  static Map<String, String> linguagensDeCodigo(String corpo) {
+    final linhas = corpo.split('\n');
+    final documento = md.Document(extensionSet: md.ExtensionSet.gitHubWeb);
+
+    final mapa = <String, String>{};
+    void varrer(List<md.Node> nos) {
+      for (final no in nos) {
+        if (no is! md.Element) continue;
+
+        final classe = no.attributes['class'];
+        if (no.tag == 'code' && classe != null) {
+          final lingua = classe
+              .split(' ')
+              .firstWhere(
+                (c) => c.startsWith('language-'),
+                orElse: () => '',
+              );
+          if (lingua.length > 'language-'.length) {
+            mapa[_semEscape(no.textContent).trimRight()] = lingua
+                .substring('language-'.length)
+                .toLowerCase();
+          }
+        }
+
+        final filhos = no.children;
+        if (filhos != null) varrer(filhos);
+      }
+    }
+
+    varrer(documento.parseLines(linhas));
+    return mapa;
+  }
+
+  /// Desfaz o escape de HTML que o parser aplica ao texto.
+  ///
+  /// O parser guarda o conteudo pronto para virar HTML — uma aspa dentro do
+  /// codigo vira `&quot;` la dentro. Quem desenha recebe o texto cru, entao a
+  /// chave tem que voltar a ser crua tambem, senao todo bloco com aspas deixa
+  /// de ser encontrado. `&amp;` por ultimo: antes dele, `&amp;lt;` viraria `<`.
+  static String _semEscape(String texto) => texto
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&amp;', '&');
 
   /// Uma linha que so tem o marcador da lista — `-`, `*`, `+` ou `1.` — e a
   /// linha que existe entre apertar Enter e digitar o item.

@@ -10,6 +10,7 @@ import 'package:notas_app/models/kanban_card.dart';
 import 'package:notas_app/models/note.dart';
 import 'package:notas_app/ui/app_theme.dart';
 import 'package:notas_app/ui/note_editor.dart';
+import 'package:notas_app/ui/realce_de_codigo.dart';
 import 'package:notas_app/ui/wikilink_suggestions.dart';
 
 void main() {
@@ -895,6 +896,77 @@ void main() {
       ),
       findsOneWidget,
     );
+  });
+
+  testWidgets('o bloco de codigo sai realçado no preview', (tester) async {
+    // Ponta a ponta: a nota entra com a cerca ``` e o preview tem que sair com
+    // as cores. O caminho passa por achar a linguagem da cerca e casa-la com o
+    // texto que o desenho recebe — e foi ai que ja quebrou uma vez, num bloco
+    // com aspas.
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.dark,
+        home: Scaffold(
+          body: NoteEditor(
+            note: Note.parse(
+              '/vault/n.md',
+              '``` Java\n'
+                  '// comentario\n'
+                  'public class Hello {\n'
+                  '  int vezes = 42;\n'
+                  '  String oi = "Hello world!";\n'
+                  '}\n'
+                  '```\n',
+            ),
+            onSave: (_) async {},
+            onDirtyChanged: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // O bloco e desenhado como texto selecionavel; aqui se le a cor de cada
+    // pedaço dele.
+    final cores = <String, Color?>{};
+    for (final selecionavel in tester.widgetList<SelectableText>(
+      find.byType(SelectableText),
+    )) {
+      final span = selecionavel.textSpan;
+      if (span == null || !span.toPlainText().contains('public class')) {
+        continue;
+      }
+      // A cor fica no span de cima e o texto no de baixo, entao a leitura tem
+      // que descer herdando — foi assim que o realce quase passou por
+      // desligado numa conferencia anterior.
+      void descer(TextSpan atual, Color? herdada) {
+        final cor = atual.style?.color ?? herdada;
+        if ((atual.text ?? '').trim().isNotEmpty) {
+          cores[atual.text!.trim()] = cor;
+        }
+        for (final filho in atual.children ?? const <InlineSpan>[]) {
+          if (filho is TextSpan) descer(filho, cor);
+        }
+      }
+
+      descer(span, null);
+    }
+
+    Color? corDe(String trecho) => cores.entries
+        .firstWhere(
+          (e) => e.key.contains(trecho),
+          orElse: () => const MapEntry('', null),
+        )
+        .value;
+
+    expect(corDe('public'), Darcula.palavraChave, reason: 'palavra reservada');
+    expect(corDe('comentario'), Darcula.comentario, reason: 'comentario');
+    expect(corDe('42'), Darcula.numero, reason: 'numero');
+    expect(corDe('Hello world!'), Darcula.literal, reason: 'texto entre aspas');
   });
 
   group('link interno no preview', () {

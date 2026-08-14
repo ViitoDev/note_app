@@ -13,6 +13,7 @@ import '../models/preview_markdown.dart';
 import '../models/wikilink.dart';
 import 'app_theme.dart';
 import 'note_properties.dart';
+import 'realce_de_codigo.dart';
 import 'resizable_split.dart';
 import 'wikilink_suggestions.dart';
 
@@ -731,6 +732,15 @@ class NoteEditorState extends State<NoteEditor> {
     );
   }
 
+  /// Fonte dos trechos de codigo do preview — o `code` de dentro da linha e os
+  /// blocos ```. O realce so troca as cores por cima dela.
+  static const _fonteDeCodigo = TextStyle(
+    fontFamily: 'Consolas',
+    fontFamilyFallback: ['Cascadia Mono', 'monospace'],
+    fontSize: 12.5,
+    height: 1.6,
+  );
+
   /// Recuo do texto dentro do campo. A lista de sugestoes precisa dele para
   /// converter a posiçao do cursor no texto em posiçao na tela.
   static const _recuo = EdgeInsets.fromLTRB(
@@ -927,6 +937,12 @@ class NoteEditorState extends State<NoteEditor> {
                 // escrito.
                 data: desenhado,
                 selectable: true,
+                // O realce dos blocos ``` precisa saber a linguagem de cada
+                // um, e quem desenha entrega so o texto de dentro do bloco.
+                syntaxHighlighter: RealceDeCodigo(
+                  porTrecho: PreviewMarkdown.linguagensDeCodigo(desenhado),
+                  base: _fonteDeCodigo,
+                ),
                 // O Enter do editor vale como quebra tambem aqui.
                 //
                 // No Markdown de origem uma quebra sozinha nao quebra nada: as
@@ -966,12 +982,7 @@ class NoteEditorState extends State<NoteEditor> {
   /// borda em vez de preenchimento forte, citaçao marcada por barra lateral.
   MarkdownStyleSheet _markdownStyle(ThemeData theme) {
     final scheme = theme.colorScheme;
-    const mono = TextStyle(
-      fontFamily: 'Consolas',
-      fontFamilyFallback: ['Cascadia Mono', 'monospace'],
-      fontSize: 12.5,
-      height: 1.6,
-    );
+    const mono = _fonteDeCodigo;
 
     // Titulos e negrito num azul proprio, que nao e o dos links.
     //

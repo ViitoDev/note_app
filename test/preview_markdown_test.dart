@@ -133,6 +133,63 @@ void main() {
     });
   });
 
+  group('linguagem de cada bloco de codigo', () {
+    test('acha a linguagem escrita na cerca', () {
+      const corpo = '```java\npublic class A {}\n```\n';
+      expect(PreviewMarkdown.linguagensDeCodigo(corpo), {
+        'public class A {}': 'java',
+      });
+    });
+
+    test('a chave e o texto que o desenho vai receber', () {
+      // O renderizador entrega o miolo do bloco sem a cerca e sem a quebra
+      // final. Se a chave nao sair identica, o realce nao acha a linguagem.
+      const corpo = '```java\nint a = 1;\nint b = 2;\n```\n';
+      expect(PreviewMarkdown.linguagensDeCodigo(corpo).keys.single,
+          'int a = 1;\nint b = 2;');
+    });
+
+    test('nome com maiuscula e espaço na cerca', () {
+      // `\`\`\` Java` e como se escreve na pratica.
+      const corpo = '``` Java\nint a;\n```\n';
+      expect(PreviewMarkdown.linguagensDeCodigo(corpo).values.single, 'java');
+    });
+
+    test('varios blocos, cada um com a sua', () {
+      const corpo = '```java\nA a;\n```\n\ntexto\n\n```python\nx = 1\n```\n';
+      expect(PreviewMarkdown.linguagensDeCodigo(corpo), {
+        'A a;': 'java',
+        'x = 1': 'python',
+      });
+    });
+
+    test('aspas e sinais voltam crus na chave', () {
+      // O parser guarda o codigo ja escapado para HTML — `"` vira `&quot;`.
+      // Quem desenha recebe o texto cru, entao a chave tem que ser crua: sem
+      // isto, todo bloco com aspas — quase todo `println` — perdia o realce.
+      const corpo = '```java\n'
+          'System.out.println("Hello world!");\n'
+          'if (a < b && c > d) {}\n'
+          '```\n';
+
+      expect(
+        PreviewMarkdown.linguagensDeCodigo(corpo).keys.single,
+        'System.out.println("Hello world!");\nif (a < b && c > d) {}',
+      );
+    });
+
+    test('bloco sem linguagem fica de fora', () {
+      // Sem linguagem declarada nao ha o que realçar: adivinhar erra em
+      // codigo curto.
+      expect(PreviewMarkdown.linguagensDeCodigo('```\nx\n```\n'), isEmpty);
+    });
+
+    test('codigo dentro de uma lista tambem conta', () {
+      const corpo = '- Exemplo:\n\n  ```java\n  int a;\n  ```\n';
+      expect(PreviewMarkdown.linguagensDeCodigo(corpo).values, ['java']);
+    });
+  });
+
   test('os links internos continuam virando link', () {
     expect(
       PreviewMarkdown.preparar('Veja [[Tutorial]]'),
