@@ -860,6 +860,43 @@ void main() {
     });
   });
 
+  testWidgets('a quebra de linha do editor e quebra no preview', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.dark,
+        home: Scaffold(
+          body: NoteEditor(
+            note: Note.parse('/vault/n.md', 'Linha um\nLinha dois\n'),
+            onSave: (_) async {},
+            onDirtyChanged: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Sem isto as duas linhas sairiam emendadas num paragrafo so — regra de
+    // Markdown escrito para largura fixa, nao para nota digitada ao lado do
+    // preview.
+    expect(
+      tester.widget<MarkdownBody>(find.byType(MarkdownBody)).softLineBreak,
+      isTrue,
+    );
+    expect(
+      find.descendant(
+        of: find.byType(MarkdownBody),
+        matching: find.text('Linha um\nLinha dois', findRichText: true),
+      ),
+      findsOneWidget,
+    );
+  });
+
   group('link interno no preview', () {
     Future<List<String>> montar(WidgetTester tester, String corpo) async {
       tester.view.physicalSize = const Size(1200, 800);

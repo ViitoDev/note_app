@@ -9,6 +9,7 @@ import 'package:markdown/markdown.dart' as md;
 import '../models/frontmatter_writer.dart';
 import '../models/markdown_tasks.dart';
 import '../models/note.dart';
+import '../models/preview_markdown.dart';
 import '../models/wikilink.dart';
 import 'app_theme.dart';
 import 'note_properties.dart';
@@ -883,6 +884,11 @@ class NoteEditorState extends State<NoteEditor> {
       name: widget.note.name,
     );
 
+    // O texto como ele vai ser desenhado. Sai daqui, e nao de dentro do
+    // `MarkdownBody`, porque o realce de codigo precisa olhar exatamente o
+    // mesmo texto para achar a linguagem de cada bloco.
+    final desenhado = PreviewMarkdown.preparar(parsed.body);
+
     // O contador anda na ordem em que o parser desenha as caixas, que e a
     // ordem delas no texto.
     final total = MarkdownTasks.contar(parsed.body);
@@ -915,10 +921,21 @@ class NoteEditorState extends State<NoteEditor> {
               ),
               const SizedBox(height: AppTheme.gapLg),
               MarkdownBody(
-                // `[[nota]]` vira link comum so na hora de desenhar: no
-                // arquivo, e no editor ao lado, os colchetes continuam la.
-                data: Wikilink.paraMarkdown(parsed.body),
+                // Os ajustes de leitura — `[[nota]]` virando link, item de
+                // lista ainda vazio deixando de virar titulo — acontecem so
+                // aqui. No arquivo, e no editor ao lado, o texto e o que foi
+                // escrito.
+                data: desenhado,
                 selectable: true,
+                // O Enter do editor vale como quebra tambem aqui.
+                //
+                // No Markdown de origem uma quebra sozinha nao quebra nada: as
+                // linhas de um mesmo paragrafo sao emendadas, porque o texto
+                // era escrito com largura fixa e a quebra so existia no
+                // arquivo. Numa nota digitada ao lado do preview a conta e
+                // outra — quem apertou Enter apertou para pular a linha, e via
+                // as duas metades emendarem do outro lado da tela.
+                softLineBreak: true,
                 onTapLink: (_, href, _) {
                   final titulo = href == null ? null : Wikilink.tituloDe(href);
                   if (titulo != null) widget.onAbrirLink?.call(titulo);
