@@ -47,10 +47,7 @@ void main() {
         Wikilink.paraMarkdown('use `[[assim]]` para ligar'),
         'use `[[assim]]` para ligar',
       );
-      expect(
-        Wikilink.paraMarkdown('```\n[[Nota]]\n```'),
-        '```\n[[Nota]]\n```',
-      );
+      expect(Wikilink.paraMarkdown('```\n[[Nota]]\n```'), '```\n[[Nota]]\n```');
     });
 
     test('colchete solto nao vira link', () {

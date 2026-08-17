@@ -29,10 +29,7 @@ abstract final class PreviewMarkdown {
         if (no.tag == 'code' && classe != null) {
           final lingua = classe
               .split(' ')
-              .firstWhere(
-                (c) => c.startsWith('language-'),
-                orElse: () => '',
-              );
+              .firstWhere((c) => c.startsWith('language-'), orElse: () => '');
           if (lingua.length > 'language-'.length) {
             mapa[_semEscape(no.textContent).trimRight()] = lingua
                 .substring('language-'.length)

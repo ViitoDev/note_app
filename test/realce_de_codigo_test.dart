@@ -21,13 +21,12 @@ Map<String, Color?> _cores(TextSpan span) {
 void main() {
   const fonte = TextStyle(fontFamily: 'Consolas', fontSize: 12.5);
 
-  RealceDeCodigo realce(String codigo, String linguagem) => RealceDeCodigo(
-    porTrecho: {codigo: linguagem},
-    base: fonte,
-  );
+  RealceDeCodigo realce(String codigo, String linguagem) =>
+      RealceDeCodigo(porTrecho: {codigo: linguagem}, base: fonte);
 
   test('Java sai com as cores do Darcula', () {
-    const codigo = 'public class Hello {\n'
+    const codigo =
+        'public class Hello {\n'
         '  // comentario\n'
         '  int idade = 42;\n'
         '  String nome = "mundo";\n'
@@ -35,9 +34,8 @@ void main() {
 
     final cores = _cores(realce(codigo, 'java').format(codigo));
 
-    Color? corDe(String trecho) => cores.entries
-        .firstWhere((e) => e.key.contains(trecho))
-        .value;
+    Color? corDe(String trecho) =>
+        cores.entries.firstWhere((e) => e.key.contains(trecho)).value;
 
     // As quatro cores que o olho reconhece de imediato na IDE.
     expect(corDe('public'), Darcula.palavraChave, reason: 'palavra chave');
@@ -58,7 +56,10 @@ void main() {
     // Adivinhar a linguagem erra em codigo curto, e um `for` pintado de
     // Python num trecho de Java confunde mais do que ajuda.
     const codigo = 'public class Hello {}';
-    final span = RealceDeCodigo(porTrecho: const {}, base: fonte).format(codigo);
+    final span = RealceDeCodigo(
+      porTrecho: const {},
+      base: fonte,
+    ).format(codigo);
 
     expect(span.children, isNull);
     expect(span.text, codigo);
@@ -75,8 +76,11 @@ void main() {
 
   test('os apelidos comuns valem', () {
     // Ninguem escreve ```cs; escreve ```c#.
-    for (final par in {'py': 'x = 1', 'c#': 'int a = 1;', 'js': 'let a = 1;'}
-        .entries) {
+    for (final par in {
+      'py': 'x = 1',
+      'c#': 'int a = 1;',
+      'js': 'let a = 1;',
+    }.entries) {
       final span = realce(par.value, par.key).format(par.value);
       expect(span.children, isNotNull, reason: par.key);
     }

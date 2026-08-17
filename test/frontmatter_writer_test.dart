@@ -16,7 +16,11 @@ void main() {
 
     test('campo novo entra antes do fechamento', () {
       expect(
-        FrontmatterWriter.definir('---\ntipo: nota\n---\n\nCorpo\n', 'hora', '9:30'),
+        FrontmatterWriter.definir(
+          '---\ntipo: nota\n---\n\nCorpo\n',
+          'hora',
+          '9:30',
+        ),
         '---\ntipo: nota\nhora: 9:30\n---\n\nCorpo\n',
       );
     });
@@ -53,7 +57,10 @@ void main() {
       // `---` seguido de `---` nao e metadado nenhum, e a linha em branco que
       // separava o bloco do texto vai junto.
       expect(
-        FrontmatterWriter.remover('---\nstatus: pronto\n---\n\nCorpo\n', 'status'),
+        FrontmatterWriter.remover(
+          '---\nstatus: pronto\n---\n\nCorpo\n',
+          'status',
+        ),
         'Corpo\n',
       );
     });

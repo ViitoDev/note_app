@@ -311,9 +311,7 @@ class _GraphScreenState extends State<GraphScreen>
       children: [
         IconButton(
           icon: Icon(
-            _todosOsNomes
-                ? Icons.label_outline
-                : Icons.label_off_outlined,
+            _todosOsNomes ? Icons.label_outline : Icons.label_off_outlined,
             size: 17,
           ),
           tooltip: _todosOsNomes

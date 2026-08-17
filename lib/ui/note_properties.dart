@@ -223,9 +223,8 @@ class _NotePropertiesState extends State<NoteProperties> {
         ],
         atual: atual,
         vazio: 'definir',
-        rotulo: (v) => _tiposDeNota
-            .firstWhere((t) => t.$1 == v, orElse: () => (v, v))
-            .$2,
+        rotulo: (v) =>
+            _tiposDeNota.firstWhere((t) => t.$1 == v, orElse: () => (v, v)).$2,
         onEscolher: (v) => widget.onCampo('tipo', v),
       ),
     );
@@ -240,7 +239,8 @@ class _NotePropertiesState extends State<NoteProperties> {
         // As colunas do quadro, na ordem em que estao la. Escolher aqui e o
         // mesmo que arrastar o card ali.
         opcoes: [
-          for (final c in KanbanColumn.values) (valor: c.valor, rotulo: c.label),
+          for (final c in KanbanColumn.values)
+            (valor: c.valor, rotulo: c.label),
           if (atual != null && coluna == null) (valor: atual, rotulo: atual),
         ],
         atual: coluna?.valor ?? atual,
@@ -517,10 +517,7 @@ class _Menu extends StatelessWidget {
             ),
           ),
       ],
-      child: _Alvo(
-        texto: atual == null ? null : rotulo(atual!),
-        vazio: vazio,
-      ),
+      child: _Alvo(texto: atual == null ? null : rotulo(atual!), vazio: vazio),
     );
   }
 }

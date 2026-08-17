@@ -3,10 +3,8 @@ import 'package:markdown/markdown.dart' as md;
 import 'package:notas_app/models/preview_markdown.dart';
 
 /// Desenha o corpo pelo mesmo parser que o preview usa.
-String _html(String corpo) => md.markdownToHtml(
-  corpo,
-  extensionSet: md.ExtensionSet.gitHubWeb,
-);
+String _html(String corpo) =>
+    md.markdownToHtml(corpo, extensionSet: md.ExtensionSet.gitHubWeb);
 
 void main() {
   group('item de lista ainda vazio', () {
@@ -18,7 +16,9 @@ void main() {
     });
 
     test('depois de preparado, vira lista e nao titulo', () {
-      final html = _html(PreviewMarkdown.preparar('- Ferramenta: Python\n  - '));
+      final html = _html(
+        PreviewMarkdown.preparar('- Ferramenta: Python\n  - '),
+      );
 
       expect(html, isNot(contains('<h2')));
       expect(html, contains('Ferramenta: Python'));
@@ -145,8 +145,10 @@ void main() {
       // O renderizador entrega o miolo do bloco sem a cerca e sem a quebra
       // final. Se a chave nao sair identica, o realce nao acha a linguagem.
       const corpo = '```java\nint a = 1;\nint b = 2;\n```\n';
-      expect(PreviewMarkdown.linguagensDeCodigo(corpo).keys.single,
-          'int a = 1;\nint b = 2;');
+      expect(
+        PreviewMarkdown.linguagensDeCodigo(corpo).keys.single,
+        'int a = 1;\nint b = 2;',
+      );
     });
 
     test('nome com maiuscula e espaço na cerca', () {
@@ -167,7 +169,8 @@ void main() {
       // O parser guarda o codigo ja escapado para HTML — `"` vira `&quot;`.
       // Quem desenha recebe o texto cru, entao a chave tem que ser crua: sem
       // isto, todo bloco com aspas — quase todo `println` — perdia o realce.
-      const corpo = '```java\n'
+      const corpo =
+          '```java\n'
           'System.out.println("Hello world!");\n'
           'if (a < b && c > d) {}\n'
           '```\n';

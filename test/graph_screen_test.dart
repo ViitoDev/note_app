@@ -72,7 +72,8 @@ void main() {
     // O grafo nomeia so os nos mais ligados para nao virar mancha de texto;
     // este botao e a saida para quem quer ver o vault inteiro escrito.
     final grafo = VaultGraph.build([
-      for (var i = 0; i < 12; i++) _nota('N$i', '---\ntags: [t${i % 3}]\n---\n'),
+      for (var i = 0; i < 12; i++)
+        _nota('N$i', '---\ntags: [t${i % 3}]\n---\n'),
     ]);
     await _montar(tester, grafo);
 
