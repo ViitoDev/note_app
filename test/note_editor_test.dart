@@ -11,6 +11,7 @@ import 'package:notas_app/models/note.dart';
 import 'package:notas_app/ui/app_theme.dart';
 import 'package:notas_app/ui/note_editor.dart';
 import 'package:notas_app/ui/realce_de_codigo.dart';
+import 'package:notas_app/ui/tabela_editavel.dart';
 import 'package:notas_app/ui/wikilink_suggestions.dart';
 
 void main() {
@@ -402,10 +403,7 @@ void main() {
       await tester.tap(find.text('Evento — entra no calendario'));
       await tester.pumpAndSettle();
 
-      expect(
-        find.text('Evento — entra no calendario'),
-        findsNWidgets(nosDois),
-      );
+      expect(find.text('Evento — entra no calendario'), findsNWidgets(nosDois));
     });
 
     testWidgets('data ISO do frontmatter sai por extenso', (tester) async {
@@ -540,7 +538,8 @@ void main() {
       await tester.tap(
         find
             .byWidgetPredicate(
-              (w) => w is Icon && w.icon == Icons.close && w.color == AppTheme.tag,
+              (w) =>
+                  w is Icon && w.icon == Icons.close && w.color == AppTheme.tag,
             )
             .first,
       );
@@ -556,7 +555,7 @@ void main() {
       final gravado = await montar(
         tester,
         '---\ntipo: nota\n# um comentario\ntags: [a]\nstatus: fazendo\n'
-            '---\n\nOi\n',
+        '---\n\nOi\n',
       );
 
       await tester.tap(find.byIcon(Icons.add).first);
@@ -596,9 +595,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      return tester
-          .widget<TextField>(find.byType(TextField).first)
-          .controller!;
+      return tester.widget<TextField>(find.byType(TextField).first).controller!;
     }
 
     /// Digita, deixando o cursor no fim, e aperta a tecla.
@@ -717,9 +714,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      return tester
-          .widget<TextField>(find.byType(TextField).first)
-          .controller!;
+      return tester.widget<TextField>(find.byType(TextField).first).controller!;
     }
 
     Future<void> tab(WidgetTester tester, {bool shift = false}) async {
@@ -819,6 +814,290 @@ void main() {
     });
   });
 
+  group('tabela pelo menu do botao direito', () {
+    /// Monta o editor e devolve o que ele grava — o `.md` continua sendo a
+    /// unica verdade, mesmo com a tabela desenhada.
+    Future<ValueGetter<String?>> montar(
+      WidgetTester tester,
+      String corpo,
+    ) async {
+      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      String? gravado;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.dark,
+          home: Scaffold(
+            body: NoteEditor(
+              note: Note.parse('/vault/n.md', corpo),
+              onSave: (texto) async => gravado = texto,
+              onDirtyChanged: (_) {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return () => gravado;
+    }
+
+    /// Deixa a gravaçao automatica correr, para ler o que foi para o arquivo.
+    Future<void> gravar(WidgetTester tester) async {
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+    }
+
+    /// Os campos de uma tabela desenhada, em ordem de leitura.
+    Finder celulas() => find.descendant(
+      of: find.byType(TabelaEditavel),
+      matching: find.byType(TextField),
+    );
+
+    /// Insere uma tabela de [linhas] por [colunas] pelo menu.
+    Future<void> inserir(
+      WidgetTester tester, {
+      required int linhas,
+      required int colunas,
+    }) async {
+      await tester.tap(find.text('Inserir tabela'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(ValueKey('tabela-${linhas}x$colunas')));
+      await tester.pumpAndSettle();
+    }
+
+    /// Abre o menu do botao direito no campo de texto.
+    Future<void> menu(WidgetTester tester) async {
+      await tester.tap(
+        find.byType(TextField).first,
+        buttons: kSecondaryMouseButton,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets(
+      'o menu tem a opçao de inserir tabela',
+      (tester) async {
+        await montar(tester, '');
+        await menu(tester);
+
+        expect(find.text('Inserir tabela'), findsOneWidget);
+      },
+      // Em cada desktop o menu de contexto e desenhado por um widget
+      // diferente, e o do Windows — que e onde o app roda — nao e o que o
+      // teste pega por padrao.
+      variant: TargetPlatformVariant.desktop(),
+    );
+
+    testWidgets('a grade escolhe quantas linhas por quantas colunas', (
+      tester,
+    ) async {
+      await montar(tester, '');
+      await menu(tester);
+
+      // Tres linhas por duas colunas: o quadrado da terceira linha, segunda
+      // coluna.
+      await inserir(tester, linhas: 3, colunas: 2);
+
+      final grade = tester.widget<TabelaEditavel>(find.byType(TabelaEditavel));
+      expect(grade.tabela.linhas, 3);
+      expect(grade.tabela.colunas, 2);
+      expect(celulas(), findsNWidgets(6));
+    });
+
+    testWidgets('a tabela sai desenhada no editor, e nao em texto', (
+      tester,
+    ) async {
+      // O ponto da mudança: quem escreve ve a grade dos dois lados da tela, e
+      // nao as barras de um lado e a tabela do outro.
+      final gravado = await montar(tester, 'Antes');
+      await menu(tester);
+      await inserir(tester, linhas: 2, colunas: 2);
+      await gravar(tester);
+
+      expect(find.byType(TabelaEditavel), findsOneWidget);
+      // Nenhum campo de texto cru mostra barra: as que existem estao no
+      // arquivo, e nao na tela.
+      for (final campo in tester.widgetList<TextField>(
+        find.byType(TextField),
+      )) {
+        expect(campo.controller?.text ?? '', isNot(contains('|')));
+      }
+      expect(gravado(), contains('| --- | --- |'));
+    });
+
+    testWidgets('o cursor cai na primeira celula da tabela nova', (
+      tester,
+    ) async {
+      await montar(tester, '');
+      await menu(tester);
+      await inserir(tester, linhas: 2, colunas: 2);
+
+      final primeira = tester.widgetList<TextField>(celulas()).first;
+      expect(primeira.focusNode?.hasFocus, isTrue);
+    });
+
+    testWidgets('a tabela entra onde o cursor esta, e nao no fim', (
+      tester,
+    ) async {
+      final gravado = await montar(tester, 'Antes\nDepois');
+
+      // O botao direito poe o cursor onde clicou, como em qualquer editor:
+      // clicando na primeira letra, a tabela nasce antes do texto todo.
+      final campoNaTela = find.byType(TextField).first;
+      await tester.tapAt(
+        tester.getTopLeft(campoNaTela) + const Offset(6, 20),
+        buttons: kSecondaryMouseButton,
+      );
+      await tester.pumpAndSettle();
+
+      await inserir(tester, linhas: 1, colunas: 1);
+      await gravar(tester);
+
+      expect(gravado(), '|  |\n| --- |\n\nAntes\nDepois');
+    });
+
+    testWidgets('cancelar nao escreve nada', (tester) async {
+      final gravado = await montar(tester, 'Antes');
+      await menu(tester);
+      await tester.tap(find.text('Inserir tabela'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Cancelar'));
+      await tester.pumpAndSettle();
+      await gravar(tester);
+
+      expect(find.byType(TabelaEditavel), findsNothing);
+      expect(gravado(), isNull);
+    });
+
+    testWidgets('o que se digita numa celula vai para o arquivo', (
+      tester,
+    ) async {
+      final gravado = await montar(
+        tester,
+        '| a | b |\n| --- | --- |\n|  |  |\n',
+      );
+
+      await tester.enterText(celulas().at(2), 'escrito');
+      await gravar(tester);
+
+      expect(gravado(), '| a | b |\n| --- | --- |\n| escrito |  |\n');
+    });
+
+    testWidgets('a barra da tabela acrescenta e tira linha', (tester) async {
+      final gravado = await montar(tester, '| a |\n| --- |\n| b |\n');
+
+      // As açoes so aparecem com o cursor na tabela; clicar numa celula basta.
+      await tester.tap(celulas().first);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('tabela-mais-linha')));
+      await tester.pumpAndSettle();
+      await gravar(tester);
+
+      expect(gravado(), '| a |\n| --- |\n|  |\n| b |\n');
+    });
+
+    testWidgets('o espaço digitado no meio da frase nao e apagado', (
+      tester,
+    ) async {
+      // O Markdown apara as pontas de cada celula ao ser lido, entao a volta
+      // devolvia "mais" no lugar de "mais " — e a segunda palavra nunca
+      // conseguia começar.
+      final gravado = await montar(tester, '| a |\n| --- |\n|  |\n');
+
+      await tester.enterText(celulas().at(1), 'mais ');
+      await tester.pumpAndSettle();
+
+      final celula = tester.widget<TextField>(celulas().at(1));
+      expect(celula.controller?.text, 'mais ');
+
+      await tester.enterText(celulas().at(1), 'mais unario');
+      await gravar(tester);
+      expect(gravado(), '| a |\n| --- |\n| mais unario |\n');
+    });
+
+    testWidgets('texto longo quebra em varias linhas dentro da celula', (
+      tester,
+    ) async {
+      await montar(
+        tester,
+        '| a | b |\n'
+        '| --- | --- |\n'
+        '| curto | Uma descriçao bem longa, que passa da largura da coluna e '
+        'precisa continuar na linha de baixo em vez de sumir para o lado. |\n',
+      );
+
+      final curta = tester.getSize(celulas().at(2));
+      final longa = tester.getSize(celulas().at(3));
+
+      expect(longa.height, greaterThan(curta.height));
+    });
+
+    testWidgets('Enter nao entra na celula, que viraria tabela quebrada', (
+      tester,
+    ) async {
+      final gravado = await montar(tester, '| a |\n| --- |\n|  |\n');
+
+      await tester.tap(celulas().at(1));
+      await tester.pumpAndSettle();
+      await tester.enterText(celulas().at(1), 'um');
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.enterText(celulas().at(1), 'um dois');
+      await gravar(tester);
+
+      expect(gravado(), '| a |\n| --- |\n| um dois |\n');
+    });
+
+    testWidgets('as açoes ficam lado a lado, e nao empilhadas', (tester) async {
+      // Empilhadas elas ocupavam meia tela e escondiam o texto de baixo.
+      await montar(tester, '| a |\n| --- |\n| b |\n');
+      await tester.tap(celulas().first);
+      await tester.pumpAndSettle();
+
+      final primeira = tester.getTopLeft(
+        find.byKey(const ValueKey('tabela-mais-linha')),
+      );
+      final ultima = tester.getTopLeft(
+        find.byKey(const ValueKey('tabela-excluir')),
+      );
+
+      expect(ultima.dy, primeira.dy, reason: 'na mesma altura');
+      expect(ultima.dx, greaterThan(primeira.dx), reason: 'uma apos a outra');
+    });
+
+    testWidgets('excluir tira a tabela da nota', (tester) async {
+      // Desenhada, ela nao da mais para apagar selecionando o texto — esta e a
+      // unica saida, e por isso tem que funcionar.
+      final gravado = await montar(tester, 'Antes\n\n| a |\n| --- |\n\nDepois');
+
+      await tester.tap(celulas().first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('tabela-excluir')));
+      await tester.pumpAndSettle();
+      await gravar(tester);
+
+      expect(find.byType(TabelaEditavel), findsNothing);
+      expect(gravado(), 'Antes\n\nDepois');
+    });
+
+    testWidgets('a tabela escrita sai desenhada no preview', (tester) async {
+      // Ponta a ponta: o que o menu escreve tem que atravessar os ajustes do
+      // preview e chegar do outro lado como tabela, e nao como texto com
+      // barras.
+      await montar(tester, '| Coluna 1 | Coluna 2 |\n| --- | --- |\n|  |  |\n');
+
+      expect(
+        find.descendant(
+          of: find.byType(MarkdownBody),
+          matching: find.byType(Table),
+        ),
+        findsOneWidget,
+      );
+    });
+  });
+
   group('os dois lados acompanham a mesma parte da nota', () {
     testWidgets('rolar o texto leva o preview junto', (tester) async {
       tester.view.physicalSize = const Size(1200, 700);
@@ -826,9 +1105,7 @@ void main() {
       addTearDown(tester.view.reset);
 
       // Nota longa o bastante para os dois lados rolarem.
-      final longa = [
-        for (var i = 0; i < 120; i++) 'Linha $i',
-      ].join('\n\n');
+      final longa = [for (var i = 0; i < 120; i++) 'Linha $i'].join('\n\n');
 
       await tester.pumpWidget(
         MaterialApp(
@@ -845,9 +1122,10 @@ void main() {
       await tester.pumpAndSettle();
 
       final rolagens = find.byType(SingleChildScrollView);
-      double posicao(int qual) =>
-          tester.widget<SingleChildScrollView>(rolagens.at(qual)).controller!
-              .offset;
+      double posicao(int qual) => tester
+          .widget<SingleChildScrollView>(rolagens.at(qual))
+          .controller!
+          .offset;
 
       expect(posicao(1), 0);
 
@@ -1008,7 +1286,10 @@ void main() {
       );
 
       final desenhado = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
-      expect(desenhado.data, 'Veja [Plano de ensino](wikilink:Plano%20de%20ensino) hoje.\n');
+      expect(
+        desenhado.data,
+        'Veja [Plano de ensino](wikilink:Plano%20de%20ensino) hoje.\n',
+      );
     });
 
     testWidgets('clicar no link avisa qual nota abrir', (tester) async {
@@ -1023,10 +1304,7 @@ void main() {
     });
 
     testWidgets('titulo com acento volta como foi escrito', (tester) async {
-      final abertas = await montar(
-        tester,
-        'Veja [[Educação a distância]].\n',
-      );
+      final abertas = await montar(tester, 'Veja [[Educação a distância]].\n');
 
       await tester.tap(find.textContaining('Educação a distância').last);
       await tester.pumpAndSettle();
@@ -1068,9 +1346,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      return tester
-          .widget<TextField>(find.byType(TextField).first)
-          .controller!;
+      return tester.widget<TextField>(find.byType(TextField).first).controller!;
     }
 
     /// Digita no corpo da nota, deixando o cursor no fim.

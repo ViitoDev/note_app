@@ -6,18 +6,43 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
 
+import '../models/blocos_da_nota.dart';
 import '../models/frontmatter_writer.dart';
 import '../models/markdown_tasks.dart';
 import '../models/note.dart';
 import '../models/preview_markdown.dart';
+import '../models/tabela_markdown.dart';
 import '../models/wikilink.dart';
 import 'app_theme.dart';
 import 'note_properties.dart';
 import 'realce_de_codigo.dart';
 import 'resizable_split.dart';
+import 'tabela_editavel.dart';
+import 'tamanho_da_tabela.dart';
 import 'wikilink_suggestions.dart';
 
 enum EditorMode { editar, visualizar, dividido }
+
+/// Um campo de texto do editor, ligado a um trecho do corpo da nota.
+///
+/// O corpo continua inteiro num controlador so — e dele que saem o arquivo, o
+/// preview e todas as teclas que mexem no texto. Estes aqui sao janelas para
+/// pedaços dele, uma para cada intervalo entre tabelas.
+class _TrechoEditavel {
+  _TrechoEditavel({required this.campo, required this.foco});
+
+  final TextEditingController campo;
+  final FocusNode foco;
+
+  /// Onde o trecho começa e termina no corpo. Anda a cada mexida no texto.
+  int inicio = 0;
+  int fim = 0;
+
+  void soltar() {
+    campo.dispose();
+    foco.dispose();
+  }
+}
 
 /// Caixa de tarefa clicavel do preview.
 class _CaixaDeTarefa extends StatelessWidget {
@@ -113,10 +138,19 @@ class NoteEditorState extends State<NoteEditor> {
   final _editorScroll = ScrollController();
   final _previewScroll = ScrollController();
 
-  /// O foco do campo de texto e proprio para que as setas e o Enter cheguem
-  /// aqui antes de virarem movimento de cursor e quebra de linha — sem isso
-  /// nao ha como dirigir a lista de sugestoes pelo teclado.
-  late final FocusNode _focoDoTexto = FocusNode(onKeyEvent: _teclasDoEditor);
+  /// O corpo dividido em blocos: texto cru e tabelas.
+  List<BlocoDaNota> _blocos = const [];
+
+  /// Um campo de texto para cada bloco de texto, na ordem deles.
+  final _trechos = <_TrechoEditavel>[];
+
+  /// Verdadeiro enquanto o corpo e o campo estao sendo acertados um pelo
+  /// outro. Sem esta trava os dois se reescreveriam em circulo.
+  bool _espelhando = false;
+
+  /// Onde começa a tabela que acabou de ser inserida, para o cursor cair na
+  /// primeira celula dela. Nulo em qualquer outro momento.
+  int? _tabelaNova;
 
   /// O `[[` que esta sendo escrito agora, se houver.
   WikilinkAberto? _link;
@@ -143,6 +177,7 @@ class NoteEditorState extends State<NoteEditor> {
     _savedText = widget.note.raw;
     _controller = TextEditingController(text: _separar(widget.note.raw))
       ..addListener(_onTextChanged);
+    _ajustarTrechos();
     // Os dois lados mostram a mesma nota: rolar um sem o outro obriga a
     // procurar de novo, do outro lado, o trecho que se estava lendo.
     _editorScroll.addListener(_editorRolou);
@@ -173,11 +208,10 @@ class NoteEditorState extends State<NoteEditor> {
     final limiteDoDestino = destino.position.maxScrollExtent;
     if (limiteDaOrigem <= 0 || limiteDoDestino <= 0) return;
 
-    final alvo =
-        (origem.offset / limiteDaOrigem * limiteDoDestino).clamp(
-          0.0,
-          limiteDoDestino,
-        );
+    final alvo = (origem.offset / limiteDaOrigem * limiteDoDestino).clamp(
+      0.0,
+      limiteDoDestino,
+    );
     // Um pixel de folga: sem ela, o arredondamento de um lado devolveria o
     // movimento para o outro sem parar.
     if ((destino.offset - alvo).abs() < 1) return;
@@ -196,6 +230,7 @@ class NoteEditorState extends State<NoteEditor> {
       // descarregou o que havia pendente antes de chegar aqui.
       _agendada?.cancel();
       _savedText = widget.note.raw;
+      _tabelaNova = null;
       _controller.text = _separar(widget.note.raw);
       _setDirty(false);
       _voltarAoTopo();
@@ -241,7 +276,9 @@ class NoteEditorState extends State<NoteEditor> {
     _controller
       ..removeListener(_onTextChanged)
       ..dispose();
-    _focoDoTexto.dispose();
+    for (final trecho in _trechos) {
+      trecho.soltar();
+    }
     _editorScroll
       ..removeListener(_editorRolou)
       ..dispose();
@@ -294,9 +331,143 @@ class NoteEditorState extends State<NoteEditor> {
   }
 
   void _onTextChanged() {
+    // Mexida vinda de fora do campo — Tab, tarefa marcada, tabela inserida.
+    // Os blocos podem ter mudado, e os campos precisam receber o texto novo.
+    if (!_espelhando) {
+      _ajustarTrechos();
+      if (mounted) setState(() {});
+    }
     _setDirty(_arquivo != _savedText);
     _agendar();
     _atualizarSugestoes();
+  }
+
+  /// Refaz a divisao do corpo em blocos e acerta os campos de texto.
+  ///
+  /// Cada campo so e reescrito quando o texto dele saiu do lugar: reescrever o
+  /// que esta sendo digitado jogaria o cursor para o começo a cada tecla.
+  void _ajustarTrechos() {
+    _blocos = BlocosDaNota.de(_controller.text);
+    final textos = _blocos.whereType<BlocoDeTexto>().toList();
+
+    // Os que sobram so sao soltos depois do quadro: neste ponto os campos
+    // deles ainda estao montados, e soltar agora derrubaria o widget vivo.
+    final removidos = <_TrechoEditavel>[];
+    while (_trechos.length > textos.length) {
+      removidos.add(_trechos.removeLast());
+    }
+    if (removidos.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        for (final trecho in removidos) {
+          trecho.soltar();
+        }
+      });
+    }
+
+    while (_trechos.length < textos.length) {
+      final trecho = _TrechoEditavel(
+        campo: TextEditingController(),
+        // O foco e proprio de cada campo para que as setas e o Enter cheguem
+        // ao editor antes de virarem movimento de cursor e quebra de linha.
+        foco: FocusNode(onKeyEvent: _teclasDoEditor),
+      );
+      trecho.campo.addListener(() => _trechoMudou(trecho));
+      // Ganhar o foco tambem conta: o campo pode receber o cursor exatamente
+      // onde ele ja estava — clicando no começo de um campo intocado, por
+      // exemplo — e ai nao ha mudança nenhuma para o controlador avisar. Sem
+      // isto o corpo ficaria sem saber onde esta o cursor.
+      trecho.foco.addListener(() {
+        if (trecho.foco.hasFocus) _trechoMudou(trecho);
+      });
+      _trechos.add(trecho);
+    }
+
+    _espelhando = true;
+    for (var i = 0; i < textos.length; i++) {
+      final trecho = _trechos[i]
+        ..inicio = textos[i].inicio
+        ..fim = textos[i].fim;
+
+      if (trecho.campo.text != textos[i].texto) {
+        trecho.campo.value = TextEditingValue(
+          text: textos[i].texto,
+          selection: _selecaoDentroDe(trecho),
+        );
+      }
+    }
+    _espelhando = false;
+  }
+
+  /// Onde o cursor do corpo cai dentro de [trecho]. Fora dele, o começo.
+  TextSelection _selecaoDentroDe(_TrechoEditavel trecho) {
+    final selecao = _controller.selection;
+    final tamanho = trecho.fim - trecho.inicio;
+    if (!selecao.isValid) return const TextSelection.collapsed(offset: 0);
+
+    final base = selecao.baseOffset - trecho.inicio;
+    if (base < 0 || base > tamanho) {
+      return const TextSelection.collapsed(offset: 0);
+    }
+    return TextSelection(
+      baseOffset: base,
+      extentOffset: (selecao.extentOffset - trecho.inicio).clamp(0, tamanho),
+    );
+  }
+
+  /// Leva ao corpo o que foi digitado num dos campos.
+  void _trechoMudou(_TrechoEditavel trecho) {
+    if (_espelhando) return;
+
+    final selecao = trecho.campo.selection;
+    _espelhando = true;
+    _controller.value = TextEditingValue(
+      text: _controller.text.replaceRange(
+        trecho.inicio,
+        trecho.fim,
+        trecho.campo.text,
+      ),
+      selection: selecao.isValid
+          ? TextSelection(
+              baseOffset: trecho.inicio + selecao.baseOffset,
+              extentOffset: trecho.inicio + selecao.extentOffset,
+            )
+          : TextSelection.collapsed(
+              offset: trecho.inicio + trecho.campo.text.length,
+            ),
+    );
+    _espelhando = false;
+
+    // O trecho mudou de tamanho, entao os limites dos blocos seguintes
+    // andaram — e uma tabela pode ter nascido ou desmanchado no caminho.
+    _ajustarTrechos();
+    if (mounted) setState(() {});
+  }
+
+  /// Troca no corpo o texto de um bloco inteiro. E por aqui que a grade grava.
+  void _trocarBloco(BlocoDaNota bloco, String novo) {
+    _controller.value = TextEditingValue(
+      text: _controller.text.replaceRange(bloco.inicio, bloco.fim, novo),
+      selection: TextSelection.collapsed(offset: bloco.inicio + novo.length),
+    );
+  }
+
+  /// Tira a tabela da nota, junto com a linha em branco que sobraria embaixo.
+  ///
+  /// Desenhada, ela nao pode mais ser apagada selecionando o texto dela: sem
+  /// esta saida, uma tabela inserida sem querer ficaria na nota para sempre.
+  void _excluirTabela(BlocoDeTabela bloco) {
+    final texto = _controller.text;
+    var fim = bloco.fim;
+    var quebras = 0;
+    while (fim < texto.length && texto[fim] == '\n' && quebras < 2) {
+      fim++;
+      quebras++;
+    }
+
+    _controller.value = TextEditingValue(
+      text: texto.replaceRange(bloco.inicio, fim, ''),
+      selection: TextSelection.collapsed(offset: bloco.inicio),
+    );
   }
 
   /// Reavalia a lista de notas sugeridas a cada tecla e a cada mexida no
@@ -549,6 +720,34 @@ class NoteEditorState extends State<NoteEditor> {
     return KeyEventResult.handled;
   }
 
+  /// Abre a grade de tamanhos e escreve a tabela onde o cursor estava.
+  ///
+  /// A tabela nasce vazia e com o cursor na primeira celula: e o mesmo que
+  /// acontece numa planilha, e poupa apagar nomes de exemplo antes de escrever
+  /// os de verdade.
+  Future<void> _inserirTabela() async {
+    // A posiçao e lida agora, e nao depois: abrir o dialogo tira o foco do
+    // campo, e o que importa e onde estava o cursor quando o menu foi pedido.
+    final cursor = _controller.selection.baseOffset;
+    final texto = _controller.text;
+
+    final tamanho = await escolherTamanhoDaTabela(context);
+    if (tamanho == null || !mounted) return;
+
+    final feito = TabelaMarkdown.inserir(
+      texto,
+      cursor < 0 ? texto.length : cursor,
+      linhas: tamanho.linhas,
+      colunas: tamanho.colunas,
+    );
+
+    _controller.value = TextEditingValue(
+      text: feito.texto,
+      selection: TextSelection.collapsed(offset: feito.inicio),
+    );
+    setState(() => _tabelaNova = feito.inicio);
+  }
+
   /// Troca o `[[` pela metade pelo link inteiro e poe o cursor depois dele.
   void _inserirLink(String titulo) {
     final link = _link;
@@ -654,7 +853,7 @@ class NoteEditorState extends State<NoteEditor> {
               child: switch (mode) {
                 EditorMode.editar => _comFicha(
                   theme,
-                  (altura) => _rawEditor(theme, altura),
+                  (altura) => _corpoEditavel(theme, altura),
                 ),
                 EditorMode.visualizar => _preview(theme),
                 EditorMode.dividido => ResizableSplit(
@@ -663,7 +862,7 @@ class NoteEditorState extends State<NoteEditor> {
                   minSecond: 240,
                   first: _comFicha(
                     theme,
-                    (altura) => _rawEditor(theme, altura),
+                    (altura) => _corpoEditavel(theme, altura),
                   ),
                   second: _preview(theme),
                 ),
@@ -775,25 +974,104 @@ class NoteEditorState extends State<NoteEditor> {
     );
   }
 
-  /// [alturaMinima] mantem o campo ocupando o painel inteiro numa nota curta:
+  /// O painel de escrita, um widget por bloco: Markdown cru nos campos de
+  /// texto, grade nas tabelas.
+  ///
+  /// [alturaMinima] mantem o editor ocupando o painel inteiro numa nota curta:
   /// sem isso o clique abaixo da ultima linha cairia no vazio, em vez de por o
   /// cursor no texto.
-  Widget _rawEditor(ThemeData theme, double alturaMinima) {
+  Widget _corpoEditavel(ThemeData theme, double alturaMinima) {
+    final filhos = <Widget>[];
+    var campos = 0;
+    var tabelas = 0;
+
+    for (var i = 0; i < _blocos.length; i++) {
+      final bloco = _blocos[i];
+      final primeiro = i == 0;
+      final ultimo = i == _blocos.length - 1;
+
+      switch (bloco) {
+        case BlocoDeTexto():
+          // O campo que fecha a nota estica ate o fim do painel; os do meio
+          // ficam do tamanho do texto, encostados nas tabelas vizinhas.
+          final minima = !ultimo
+              ? 0.0
+              : _blocos.length == 1
+              ? alturaMinima
+              : _alturaDoUltimoCampo;
+          filhos.add(
+            _campoDeTexto(
+              theme,
+              _trechos[campos++],
+              minima: minima,
+              primeiro: primeiro,
+              ultimo: ultimo,
+            ),
+          );
+        case BlocoDeTabela():
+          filhos.add(_grade(bloco, tabelas++));
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: filhos,
+    );
+  }
+
+  /// Sobra clicavel embaixo da ultima tabela. Nao e o painel inteiro: com uma
+  /// tabela no fim, isso abriria uma tela de vazio embaixo dela.
+  static const _alturaDoUltimoCampo = 160.0;
+
+  Widget _campoDeTexto(
+    ThemeData theme,
+    _TrechoEditavel trecho, {
+    required double minima,
+    required bool primeiro,
+    required bool ultimo,
+  }) {
+    // As folgas de cima e de baixo sao do painel, e nao de cada bloco: repetidas
+    // a cada campo, elas abririam um buraco em volta de toda tabela.
+    final recuo = EdgeInsets.fromLTRB(
+      _recuo.left,
+      primeiro ? _recuo.top : 0,
+      _recuo.right,
+      ultimo ? _recuo.bottom : 0,
+    );
+
     final campo = TextField(
-      controller: _controller,
-      focusNode: _focoDoTexto,
+      controller: trecho.campo,
+      focusNode: trecho.foco,
       maxLines: null,
       keyboardType: TextInputType.multiline,
       cursorColor: theme.colorScheme.primary,
       cursorWidth: 1.6,
       style: _estiloDoTexto(theme),
+      // O menu do botao direito continua sendo o do sistema — copiar, colar,
+      // selecionar tudo — com a tabela acrescentada no fim. Escrever um menu
+      // proprio custaria reimplementar o que o campo ja sabe fazer.
+      contextMenuBuilder: (context, campo) =>
+          AdaptiveTextSelectionToolbar.buttonItems(
+            anchors: campo.contextMenuAnchors,
+            buttonItems: [
+              ...campo.contextMenuButtonItems,
+              ContextMenuButtonItem(
+                label: 'Inserir tabela',
+                onPressed: () {
+                  campo.hideToolbar();
+                  unawaited(_inserirTabela());
+                },
+              ),
+            ],
+          ),
       decoration: InputDecoration(
         filled: false,
         border: InputBorder.none,
         enabledBorder: InputBorder.none,
         focusedBorder: InputBorder.none,
-        contentPadding: _recuo,
-        hintText: 'Escreva em Markdown...',
+        isDense: true,
+        contentPadding: recuo,
+        hintText: primeiro ? 'Escreva em Markdown...' : null,
         hintStyle: TextStyle(color: theme.colorScheme.onSurfaceVariant),
       ),
     );
@@ -804,12 +1082,33 @@ class NoteEditorState extends State<NoteEditor> {
         clipBehavior: Clip.none,
         children: [
           ConstrainedBox(
-            constraints: BoxConstraints(minHeight: alturaMinima),
+            constraints: BoxConstraints(minHeight: minima),
             child: campo,
           ),
-          if (_sugestoes.isNotEmpty)
-            _sugestoesNoCursor(theme, constraints.maxWidth, alturaMinima),
+          if (_sugestoes.isNotEmpty && trecho.foco.hasFocus)
+            _sugestoesNoCursor(
+              theme,
+              trecho,
+              recuo,
+              constraints.maxWidth,
+              minima,
+            ),
         ],
+      ),
+    );
+  }
+
+  Widget _grade(BlocoDeTabela bloco, int ordem) {
+    return Padding(
+      padding: EdgeInsets.symmetric(horizontal: _recuo.left),
+      child: TabelaEditavel(
+        // Pela ordem, e nao pela posiçao no texto: assim escrever acima da
+        // tabela nao a desmonta e remonta a cada tecla.
+        key: ValueKey('tabela-$ordem'),
+        tabela: bloco.tabela,
+        autofocus: bloco.inicio == _tabelaNova,
+        onMudar: (nova) => _trocarBloco(bloco, nova.markdown),
+        onExcluir: () => _excluirTabela(bloco),
       ),
     );
   }
@@ -818,9 +1117,12 @@ class NoteEditorState extends State<NoteEditor> {
   ///
   /// Fica dentro da rolagem, junto do texto: presa ao ponto do documento onde
   /// se escreve, ela acompanha a rolagem sem precisar descontar deslocamento
-  /// nenhum.
+  /// nenhum. A medida e do trecho, e nao da nota inteira — cada campo desenha
+  /// so o pedaço que lhe cabe.
   Widget _sugestoesNoCursor(
     ThemeData theme,
+    _TrechoEditavel trecho,
+    EdgeInsets recuo,
     double largura,
     double alturaMinima,
   ) {
@@ -831,17 +1133,22 @@ class NoteEditorState extends State<NoteEditor> {
     // caiu. Refazer a conta e mais simples — e mais estavel entre versoes do
     // Flutter — do que ir buscar o `RenderEditable` por dentro.
     final medida = TextPainter(
-      text: TextSpan(text: _controller.text, style: _estiloDoTexto(theme)),
+      text: TextSpan(text: trecho.campo.text, style: _estiloDoTexto(theme)),
       textDirection: TextDirection.ltr,
-    )..layout(maxWidth: largura - _recuo.horizontal);
+    )..layout(maxWidth: largura - recuo.horizontal);
 
     final cursor = medida.getOffsetForCaret(
-      TextPosition(offset: _controller.selection.baseOffset),
+      TextPosition(
+        offset: trecho.campo.selection.baseOffset.clamp(
+          0,
+          trecho.campo.text.length,
+        ),
+      ),
       Rect.zero,
     );
 
-    final topoDaLinha = _recuo.top + cursor.dy;
-    final fundo = math.max(alturaMinima, medida.height + _recuo.vertical);
+    final topoDaLinha = recuo.top + cursor.dy;
+    final fundo = math.max(alturaMinima, medida.height + recuo.vertical);
 
     // Embaixo da linha, e acima dela quando nao cabe: escrevendo no fim de uma
     // nota longa, a lista embaixo cairia fora do que da para rolar.
@@ -849,7 +1156,7 @@ class NoteEditorState extends State<NoteEditor> {
     if (y + altura > fundo) y = topoDaLinha - altura - 2;
 
     return Positioned(
-      left: (_recuo.left + cursor.dx).clamp(
+      left: (recuo.left + cursor.dx).clamp(
         0.0,
         math.max(0.0, largura - larguraDaLista),
       ),
@@ -888,11 +1195,7 @@ class NoteEditorState extends State<NoteEditor> {
   Widget _preview(ThemeData theme) {
     // Reparseia a cada build para o preview acompanhar a digitaçao, em vez de
     // mostrar o estado do arquivo em disco.
-    final parsed = Note.parse(
-      widget.note.id,
-      _arquivo,
-      name: widget.note.name,
-    );
+    final parsed = Note.parse(widget.note.id, _arquivo, name: widget.note.name);
 
     // O texto como ele vai ser desenhado. Sai daqui, e nao de dentro do
     // `MarkdownBody`, porque o realce de codigo precisa olhar exatamente o
