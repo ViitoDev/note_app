@@ -14,6 +14,7 @@ import '../models/preview_markdown.dart';
 import '../models/tabela_markdown.dart';
 import '../models/wikilink.dart';
 import 'app_theme.dart';
+import 'menu_do_texto.dart';
 import 'note_properties.dart';
 import 'realce_de_codigo.dart';
 import 'resizable_split.dart';
@@ -1047,23 +1048,24 @@ class NoteEditorState extends State<NoteEditor> {
       cursorColor: theme.colorScheme.primary,
       cursorWidth: 1.6,
       style: _estiloDoTexto(theme),
-      // O menu do botao direito continua sendo o do sistema — copiar, colar,
-      // selecionar tudo — com a tabela acrescentada no fim. Escrever um menu
-      // proprio custaria reimplementar o que o campo ja sabe fazer.
-      contextMenuBuilder: (context, campo) =>
-          AdaptiveTextSelectionToolbar.buttonItems(
-            anchors: campo.contextMenuAnchors,
-            buttonItems: [
-              ...campo.contextMenuButtonItems,
-              ContextMenuButtonItem(
-                label: 'Inserir tabela',
-                onPressed: () {
-                  campo.hideToolbar();
-                  unawaited(_inserirTabela());
-                },
-              ),
-            ],
+      // As açoes continuam sendo as que o campo oferece — ele sabe quando cada
+      // uma vale —, so que desenhadas com a cara do app e com a tabela
+      // acrescentada no fim.
+      contextMenuBuilder: (context, campo) => MenuDoTexto(
+        anchor: campo.contextMenuAnchors.primaryAnchor,
+        itens: [
+          ...MenuDoTexto.doCampo(campo),
+          ItemDoMenu(
+            rotulo: 'Inserir tabela',
+            icone: Icons.table_chart_outlined,
+            separado: true,
+            onPressed: () {
+              campo.hideToolbar();
+              unawaited(_inserirTabela());
+            },
           ),
+        ],
+      ),
       decoration: InputDecoration(
         filled: false,
         border: InputBorder.none,

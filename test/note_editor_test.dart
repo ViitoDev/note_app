@@ -889,6 +889,21 @@ void main() {
       variant: TargetPlatformVariant.desktop(),
     );
 
+    testWidgets(
+      'as açoes do campo saem em portugues',
+      (tester) async {
+        await montar(tester, 'Um texto qualquer');
+        await menu(tester);
+
+        expect(find.text('Selecionar tudo'), findsOneWidget);
+        expect(find.text('Select all'), findsNothing);
+      },
+      // So no Windows: cada plataforma oferece um conjunto proprio de açoes no
+      // clique direito — o macOS, por exemplo, nem lista o "selecionar tudo" —
+      // e prender o teste a uma so evita afirmar sobre menu que o app nao usa.
+      variant: TargetPlatformVariant.only(TargetPlatform.windows),
+    );
+
     testWidgets('a grade escolhe quantas linhas por quantas colunas', (
       tester,
     ) async {
