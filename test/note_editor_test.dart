@@ -1522,30 +1522,50 @@ void main() {
     final estilo = tester
         .widget<MarkdownBody>(find.byType(MarkdownBody))
         .styleSheet!;
-    const azul = AppTheme.realce;
     final indigoDoApp = AppTheme.dark.colorScheme.primary;
 
     // Os seis niveis, para uma nota mais funda nao perder o realce no meio.
-    for (final t in [
+    final niveis = [
       estilo.h1,
       estilo.h2,
       estilo.h3,
       estilo.h4,
       estilo.h5,
       estilo.h6,
-    ]) {
-      expect(t?.color, azul);
-    }
-    expect(estilo.strong?.color, azul);
-    expect(estilo.strong?.fontWeight, FontWeight.w700);
+    ];
 
-    // O ponto da separaçao: titulo nao pode sair na cor de link, porque link e
-    // clicavel e titulo nao.
-    expect(azul, isNot(indigoDoApp));
+    // Titulo vai escurecendo de h1 a h6 — a cor acompanha a mesma hierarquia
+    // que o tamanho da fonte, para reforça-la mesmo quando o tamanho sozinho
+    // ja nao ajuda a distinguir um nivel do outro.
+    for (var i = 0; i < niveis.length - 1; i++) {
+      expect(
+        niveis[i]!.color!.computeLuminance(),
+        lessThan(niveis[i + 1]!.color!.computeLuminance()),
+      );
+    }
+
+    // Nenhum nivel pode sair na cor de link, porque link e clicavel e titulo
+    // nao.
+    for (final t in niveis) {
+      expect(t?.color, isNot(indigoDoApp));
+    }
     expect(estilo.a?.color, indigoDoApp);
 
-    // O texto corrido nao vai junto: se tudo fosse azul, nada seria destaque.
-    expect(estilo.p?.color, isNot(azul));
+    // Negrito tem peso reforçado e cor propria, fora da escala azul dos
+    // titulos e fora da cor de link — e o que voce mesmo destacou no texto,
+    // nao a estrutura da nota.
+    expect(estilo.strong?.fontWeight, FontWeight.w700);
+    expect(estilo.strong?.color, isNot(indigoDoApp));
+    for (final t in niveis) {
+      expect(estilo.strong?.color, isNot(t?.color));
+    }
+
+    // O texto corrido nao vai junto com nenhum dos dois: se tudo fosse
+    // colorido, nada seria destaque.
+    for (final t in niveis) {
+      expect(estilo.p?.color, isNot(t?.color));
+    }
+    expect(estilo.p?.color, isNot(estilo.strong?.color));
   });
 
   testWidgets('trocar de nota volta o preview para o topo', (tester) async {

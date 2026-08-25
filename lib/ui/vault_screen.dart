@@ -1508,7 +1508,30 @@ class _VaultScreenState extends State<VaultScreen> {
       onAbrirLink: _abrirPorTitulo,
       onSave: _saveNote,
       onDirtyChanged: (dirty) => setState(() => _dirty = dirty),
+      onSugerirTags: _tagsDoVault,
     );
+  }
+
+  /// As tags ja usadas em alguma nota do vault, para a ficha sugerir no `+`.
+  ///
+  /// Reaproveita o grafo se ele ja tiver sido montado (quem visitou a aba
+  /// Grafo nesta sessao); senao le o vault agora, do mesmo jeito que o grafo
+  /// leria. So paga essa releitura quem realmente clicar no `+`.
+  Future<List<String>> _tagsDoVault() async {
+    final tree = _tree;
+    if (tree == null) return const [];
+
+    var graph = _graph;
+    if (graph == null) {
+      graph = await _graphService.build(tree);
+      if (!mounted) return const [];
+      setState(() {
+        _graph = graph;
+        _grafoPronto = true;
+      });
+    }
+
+    return [for (final tag in graph.tags) tag.label]..sort();
   }
 
   /// Abre a nota apontada por um `[[link]]` do preview.

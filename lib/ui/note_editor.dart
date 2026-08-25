@@ -90,6 +90,7 @@ class NoteEditor extends StatefulWidget {
     required this.onDirtyChanged,
     this.notasDoVault = const [],
     this.onAbrirLink,
+    this.onSugerirTags,
   });
 
   final Note note;
@@ -109,6 +110,12 @@ class NoteEditor extends StatefulWidget {
   /// a lista o autocompletar simplesmente nao aparece, e digitar `[[` continua
   /// funcionando na mao.
   final List<String> notasDoVault;
+
+  /// Busca as tags ja usadas em algum lugar do vault, para a ficha sugerir.
+  ///
+  /// Repassado direto para [NoteProperties] — veja o comentario la sobre por
+  /// que e um callback e nao uma lista pronta.
+  final Future<List<String>> Function()? onSugerirTags;
 
   @override
   State<NoteEditor> createState() => NoteEditorState();
@@ -1190,6 +1197,7 @@ class NoteEditorState extends State<NoteEditor> {
           name: widget.note.name,
         ).frontmatter,
         onCampo: _definirCampo,
+        onSugerirTags: widget.onSugerirTags,
       ),
     );
   }
@@ -1233,6 +1241,7 @@ class NoteEditorState extends State<NoteEditor> {
               NoteProperties(
                 frontmatter: parsed.frontmatter,
                 onCampo: _definirCampo,
+                onSugerirTags: widget.onSugerirTags,
               ),
               const SizedBox(height: AppTheme.gapLg),
               MarkdownBody(
@@ -1289,34 +1298,43 @@ class NoteEditorState extends State<NoteEditor> {
     final scheme = theme.colorScheme;
     const mono = _fonteDeCodigo;
 
-    // Titulos e negrito num azul proprio, que nao e o dos links.
+    // Titulo e negrito nao competem mais pelo mesmo azul.
     //
-    // E o que separa a estrutura do texto corrido numa olhada: os titulos dao
-    // o esqueleto da nota, e o negrito marca o que voce mesmo destacou. Usar
-    // aqui o indigo do app fazia titulo passar por link — e link e clicavel,
-    // titulo nao. Cada azul tem um dono: o indigo e do app, este e do texto.
-    const destaque = AppTheme.realce;
+    // Titulo vai do mais escuro (h1, o titulo da nota) ao mais claro (h6),
+    // a cor acompanhando o tamanho pra reforçar a mesma hierarquia. Negrito
+    // sai da escala de azul de proposito — e o que voce mesmo destacou no
+    // meio do texto corrido, nao a estrutura da nota, e precisa ser
+    // reconhecido de longe mesmo num h6 do tamanho de um paragrafo.
+    const azulTituloEscuro = Color(0xFF2C6E96);
+    const azulTituloClaro = Color(0xFFA9E0F7);
+    const destaqueNegrito = Color(0xFFF2B84B);
 
-    TextStyle? titulo(TextStyle? base, double tamanho) =>
-        base?.copyWith(fontSize: tamanho, height: 1.4, color: destaque);
+    Color tomDeTitulo(int nivel) =>
+        Color.lerp(azulTituloEscuro, azulTituloClaro, nivel / 5)!;
+
+    TextStyle? titulo(TextStyle? base, double tamanho, int nivel) => base
+        ?.copyWith(fontSize: tamanho, height: 1.4, color: tomDeTitulo(nivel));
 
     return MarkdownStyleSheet.fromTheme(theme).copyWith(
-      h1: titulo(theme.textTheme.titleLarge, 26)?.copyWith(height: 1.3),
-      h2: titulo(theme.textTheme.titleLarge, 19),
-      h3: titulo(theme.textTheme.titleMedium, 16),
-      h4: titulo(theme.textTheme.titleMedium, 14.5),
-      h5: titulo(theme.textTheme.titleSmall, 13.5),
-      h6: titulo(theme.textTheme.titleSmall, 12.5),
+      h1: titulo(theme.textTheme.titleLarge, 26, 0)?.copyWith(height: 1.3),
+      h2: titulo(theme.textTheme.titleLarge, 19, 1),
+      h3: titulo(theme.textTheme.titleMedium, 16, 2),
+      h4: titulo(theme.textTheme.titleMedium, 14.5, 3),
+      h5: titulo(theme.textTheme.titleSmall, 13.5, 4),
+      h6: titulo(theme.textTheme.titleSmall, 12.5, 5),
       // `strong` so troca a cor e reforça o peso; o resto da linha continua
       // herdando o estilo de onde o negrito estiver — paragrafo, item de
       // lista, celula de tabela.
-      strong: TextStyle(fontWeight: FontWeight.w700, color: destaque),
+      strong: const TextStyle(
+        fontWeight: FontWeight.w700,
+        color: destaqueNegrito,
+      ),
       h1Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
-      h2Padding: const EdgeInsets.only(top: AppTheme.gapXl, bottom: 2),
-      h3Padding: const EdgeInsets.only(top: AppTheme.gapLg, bottom: 2),
-      h4Padding: const EdgeInsets.only(top: AppTheme.gapLg, bottom: 2),
-      h5Padding: const EdgeInsets.only(top: AppTheme.gapMd, bottom: 2),
-      h6Padding: const EdgeInsets.only(top: AppTheme.gapMd, bottom: 2),
+      h2Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
+      h3Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
+      h4Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
+      h5Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
+      h6Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
       p: theme.textTheme.bodyLarge?.copyWith(fontSize: 14.5, height: 1.7),
       pPadding: const EdgeInsets.only(bottom: AppTheme.gapMd),
       listBullet: theme.textTheme.bodyLarge?.copyWith(fontSize: 14.5),

@@ -24,12 +24,20 @@ class NoteProperties extends StatefulWidget {
     super.key,
     required this.frontmatter,
     required this.onCampo,
+    this.onSugerirTags,
   });
 
   final Map<String, dynamic> frontmatter;
 
   /// Grava `campo: valor` no frontmatter da nota. Valor nulo apaga o campo.
   final void Function(String campo, String? valor) onCampo;
+
+  /// As tags ja usadas em algum lugar do vault, para sugerir no `+`.
+  ///
+  /// Vem como callback, e nao como lista pronta, porque monta-la exige reler
+  /// o vault inteiro — o mesmo custo do grafo. Sem isso toda nota pagaria essa
+  /// leitura so por existir; assim, so quem clica no `+` paga por ela.
+  final Future<List<String>> Function()? onSugerirTags;
 
   @override
   State<NoteProperties> createState() => _NotePropertiesState();
@@ -45,10 +53,37 @@ class _NotePropertiesState extends State<NoteProperties> {
   bool _adicionandoTag = false;
   final _novaTag = TextEditingController();
 
+  /// O `RawAutocomplete` do campo de tag exige controller e foco na mao
+  /// juntos, ou nenhum dos dois — sem este, a asserçao dele quebra.
+  final _focoDaTag = FocusNode();
+
+  /// As tags do resto do vault, carregadas so quando o `+` e clicado.
+  List<String> _sugestoesDoVault = const [];
+
   @override
   void dispose() {
     _novaTag.dispose();
+    _focoDaTag.dispose();
     super.dispose();
+  }
+
+  /// Abre o campo e vai buscar as tags do vault para sugerir nele.
+  ///
+  /// A busca acontece aqui, e nao antes: e o clique que diz que a pessoa quer
+  /// marcar a nota, so ai vale pagar a releitura do vault inteiro.
+  Future<void> _abrirCampoDeTag() async {
+    setState(() => _adicionandoTag = true);
+    final sugestoes = await widget.onSugerirTags?.call();
+    if (!mounted || sugestoes == null) return;
+    setState(() => _sugestoesDoVault = sugestoes);
+  }
+
+  /// Acrescenta uma tag existente escolhida na lista, sem passar pelo texto.
+  void _adicionarTagExistente(String tag) {
+    final tags = _tags;
+    if (tags.any((t) => t.toLowerCase() == tag.toLowerCase())) return;
+    _gravarTags(tags..add(tag));
+    _novaTag.clear();
   }
 
   String? _texto(String campo) {
@@ -286,9 +321,22 @@ class _NotePropertiesState extends State<NoteProperties> {
               onRemover: () => _gravarTags(_tags..remove(tag)),
             ),
           if (_adicionandoTag)
-            _CampoDeTag(controller: _novaTag, onPronto: _confirmarTag)
+            _CampoDeTag(
+              controller: _novaTag,
+              foco: _focoDaTag,
+              onPronto: _confirmarTag,
+              // Nao sugere de novo o que a nota ja tem.
+              sugestoes: [
+                for (final t in _sugestoesDoVault)
+                  if (!_tags.any(
+                    (atual) => atual.toLowerCase() == t.toLowerCase(),
+                  ))
+                    t,
+              ],
+              onEscolher: _adicionarTagExistente,
+            )
           else
-            _BotaoDeTag(onTap: () => setState(() => _adicionandoTag = true)),
+            _BotaoDeTag(onTap: _abrirCampoDeTag),
         ],
       ),
     );
@@ -615,35 +663,103 @@ class _BotaoDeTag extends StatelessWidget {
 }
 
 /// Campo de digitar a tag nova, do tamanho de uma etiqueta.
+///
+/// Sugere as tags que ja existem no vault enquanto a pessoa digita — clicar
+/// numa sugestao a acrescenta na hora. Mas a sugestao nao obriga nada: o que
+/// for digitado e nao bater com ela vira tag nova ao confirmar, do jeito que
+/// sempre funcionou.
 class _CampoDeTag extends StatelessWidget {
-  const _CampoDeTag({required this.controller, required this.onPronto});
+  const _CampoDeTag({
+    required this.controller,
+    required this.foco,
+    required this.onPronto,
+    required this.sugestoes,
+    required this.onEscolher,
+  });
 
   final TextEditingController controller;
+  final FocusNode foco;
   final VoidCallback onPronto;
+  final List<String> sugestoes;
+  final ValueChanged<String> onEscolher;
+
+  /// So a ultima tag da lista, ainda por completar — `estudos, uf` sugere
+  /// pelo `uf`, nao pelo texto inteiro digitado.
+  static String _fragmentoAtual(String texto) =>
+      texto.split(RegExp(r'[,\s]+')).last.trim().toLowerCase();
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return SizedBox(
-      width: 156,
-      child: TextField(
-        controller: controller,
-        autofocus: true,
-        style: theme.textTheme.labelMedium,
-        decoration: const InputDecoration(
-          isDense: true,
-          hintText: 'estudos, ufms',
-          contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-        ),
-        onSubmitted: (_) => onPronto(),
-        // Clicar em qualquer outro lugar fecha o campo: quem saiu dele ja
-        // terminou, e um campo aberto e esquecido fica pedindo atençao.
-        onTapOutside: (_) {
-          FocusManager.instance.primaryFocus?.unfocus();
-          onPronto();
-        },
-      ),
+    return RawAutocomplete<String>(
+      textEditingController: controller,
+      focusNode: foco,
+      optionsBuilder: (valor) {
+        final fragmento = _fragmentoAtual(valor.text);
+        final opcoes = fragmento.isEmpty
+            ? sugestoes
+            : sugestoes.where((t) => t.toLowerCase().contains(fragmento));
+        return opcoes.take(8);
+      },
+      onSelected: onEscolher,
+      fieldViewBuilder: (context, textController, focusNode, onFieldSubmitted) {
+        return SizedBox(
+          width: 156,
+          child: TextField(
+            controller: textController,
+            focusNode: focusNode,
+            autofocus: true,
+            style: theme.textTheme.labelMedium,
+            decoration: const InputDecoration(
+              isDense: true,
+              hintText: 'estudos, ufms',
+              contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+            ),
+            onSubmitted: (_) => onPronto(),
+            // Clicar em qualquer outro lugar fecha o campo: quem saiu dele ja
+            // terminou, e um campo aberto e esquecido fica pedindo atençao.
+            // Tocar numa sugestao nao conta como "fora" — o RawAutocomplete
+            // poe as duas coisas no mesmo grupo de toque.
+            onTapOutside: (_) {
+              FocusManager.instance.primaryFocus?.unfocus();
+              onPronto();
+            },
+          ),
+        );
+      },
+      optionsViewBuilder: (context, onSelecionar, opcoes) {
+        final lista = opcoes.toList();
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            elevation: 4,
+            borderRadius: BorderRadius.circular(AppTheme.radiusSm),
+            color: theme.colorScheme.surfaceContainerHigh,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 200, maxHeight: 200),
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                shrinkWrap: true,
+                itemCount: lista.length,
+                itemBuilder: (context, indice) {
+                  final tag = lista[indice];
+                  return InkWell(
+                    onTap: () => onSelecionar(tag),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 8,
+                      ),
+                      child: Text('#$tag', style: theme.textTheme.bodyMedium),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
