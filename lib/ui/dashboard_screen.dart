@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models/atividade.dart';
 import '../models/calendar_event.dart';
 import '../models/dashboard_data.dart';
+import '../models/diario_do_dia.dart';
 import '../models/kanban_card.dart';
 import 'app_theme.dart';
 import 'graph_screen.dart';
@@ -103,6 +104,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     child: SizedBox(height: 320, child: cartao),
                   ),
               if (lado) const SizedBox(height: AppTheme.gapLg),
+              // Fora da fileira, em largura inteira: um resumo por nota nao
+              // caberia numa coluna de um terço da tela, e o numero de notas
+              // do dia varia — o cartao precisa poder crescer.
+              _Diario(
+                diario: widget.dados.diario,
+                onOpenNote: widget.onOpenNote,
+              ),
+              const SizedBox(height: AppTheme.gapLg),
               _Contador(atividade: widget.atividade, hoje: widget.dados.hoje),
             ],
           ),
@@ -214,6 +223,7 @@ class _Cartao extends StatelessWidget {
     required this.filho,
     this.contador,
     this.semPadding = false,
+    this.cresce = false,
   });
 
   final String titulo;
@@ -223,6 +233,10 @@ class _Cartao extends StatelessWidget {
 
   /// O grafo se desenha ate a borda; as listas respiram.
   final bool semPadding;
+
+  /// Toma a altura que o conteudo pedir, em vez de preencher a fileira. E o
+  /// caso do diario, que vive fora dela e cresce com o numero de notas do dia.
+  final bool cresce;
 
   @override
   Widget build(BuildContext context) {
@@ -259,23 +273,23 @@ class _Cartao extends StatelessWidget {
             ),
           ),
           const Divider(height: 1),
-          Expanded(
-            child: semPadding
-                ? filho
-                : Padding(
-                    padding: const EdgeInsets.fromLTRB(
-                      AppTheme.gapLg,
-                      AppTheme.gapSm,
-                      AppTheme.gapLg,
-                      AppTheme.gapLg,
-                    ),
-                    child: filho,
-                  ),
-          ),
+          if (cresce) _corpo() else Expanded(child: _corpo()),
         ],
       ),
     );
   }
+
+  Widget _corpo() => semPadding
+      ? filho
+      : Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppTheme.gapLg,
+            AppTheme.gapSm,
+            AppTheme.gapLg,
+            AppTheme.gapLg,
+          ),
+          child: filho,
+        );
 }
 
 /// O que precisa ser feito hoje: o que venceu, a agenda do dia, as tarefas e
@@ -334,6 +348,13 @@ class _Hoje extends StatelessWidget {
                 if (dados.cardsDeHoje.isNotEmpty) ...[
                   const _Rotulo(texto: 'CARDS COM PRAZO HOJE'),
                   for (final c in dados.cardsDeHoje) _card(c),
+                  const SizedBox(height: AppTheme.gapMd),
+                ],
+                // O que esta em andamento fecha a lista: e o trabalho que ja
+                // foi começado, e nao um compromisso do dia.
+                if (dados.cardsEmAndamento.isNotEmpty) ...[
+                  const _Rotulo(texto: 'FAZENDO AGORA'),
+                  for (final c in dados.cardsEmAndamento) _card(c),
                 ],
               ],
             ),
@@ -364,8 +385,8 @@ class _Hoje extends StatelessWidget {
         _Nada(
           texto:
               'Nada marcado para hoje e nada vencido. Escreva '
-              '📅${_iso(dados.hoje)} numa linha de tarefa para ela aparecer '
-              'aqui.',
+              '📅${_iso(dados.hoje)} numa linha de tarefa — ou mova um card '
+              'para "Fazendo" no quadro — para aparecer aqui.',
         ),
         if (soltas.isNotEmpty) ...[
           const SizedBox(height: AppTheme.gapMd),
@@ -476,6 +497,311 @@ class _Recentes extends StatelessWidget {
                 ),
               ),
             ),
+    );
+  }
+}
+
+// -------------------------------------------------------------------- hoje
+
+/// O que eu fiz hoje: as notas que nasceram ou mudaram no dia, cada uma com o
+/// resumo do que tem dentro.
+///
+/// O resumo sai da propria nota — titulos de seçao, caixas riscadas, tags.
+/// Nada e escrito em lugar nenhum para isto funcionar: o `.md` diz de que a
+/// nota tratou, e o disco diz quando ela foi salva. Editar a nota no Obsidian,
+/// ou em qualquer outro editor, aparece aqui do mesmo jeito.
+class _Diario extends StatefulWidget {
+  const _Diario({required this.diario, required this.onOpenNote});
+
+  final DiarioDoDia diario;
+  final ValueChanged<String> onOpenNote;
+
+  @override
+  State<_Diario> createState() => _DiarioState();
+}
+
+class _DiarioState extends State<_Diario> {
+  /// Ate quantas notas o dia mostra ja abertas. Num dia de mexer em dez notas,
+  /// dez resumos abertos empurrariam o contador para fora da tela — e a lista
+  /// deixaria de ser um resumo.
+  static const _abertasDeSaida = 3;
+
+  /// As notas que foram abertas ou fechadas a mao.
+  ///
+  /// Guarda a *troca*, e nao o estado: assim o padrao continua valendo se o
+  /// dia crescer no meio da sessao, e ninguem precisa reabrir o que ja estava
+  /// aberto.
+  final _alternadas = <String>{};
+
+  bool _aberta(NotaDoDia nota) {
+    final padrao = widget.diario.notas.length <= _abertasDeSaida;
+    return _alternadas.contains(nota.noteId) ? !padrao : padrao;
+  }
+
+  void _alternar(NotaDoDia nota) => setState(() {
+    if (!_alternadas.remove(nota.noteId)) _alternadas.add(nota.noteId);
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final assuntos = widget.diario.assuntos;
+    final notas = widget.diario.notas;
+
+    return _Cartao(
+      titulo: 'O que fiz hoje',
+      icone: Icons.edit_note_outlined,
+      cresce: true,
+      contador: notas.isEmpty ? null : widget.diario.manchete,
+      filho: notas.isEmpty
+          ? const _Nada(
+              texto:
+                  'Nenhuma nota gravada hoje ainda. Assim que voce escrever '
+                  'ou editar uma, ela aparece aqui com o resumo do que tem '
+                  'dentro — os titulos das seçoes, as tarefas riscadas e as '
+                  'tags.',
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (assuntos.isNotEmpty) ...[
+                  const _Rotulo(texto: 'ASSUNTOS DO DIA'),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: AppTheme.gapMd),
+                    child: Wrap(
+                      spacing: AppTheme.gapXs,
+                      runSpacing: AppTheme.gapXs,
+                      children: [
+                        for (final tag in assuntos) _Etiqueta(texto: '#$tag'),
+                      ],
+                    ),
+                  ),
+                ],
+                for (var i = 0; i < notas.length; i++) ...[
+                  if (i > 0)
+                    Divider(height: AppTheme.gapMd, color: theme.dividerColor),
+                  _LinhaDoDia(
+                    nota: notas[i],
+                    aberta: _aberta(notas[i]),
+                    onAbrir: () => widget.onOpenNote(notas[i].noteId),
+                    onAlternar: () => _alternar(notas[i]),
+                  ),
+                ],
+              ],
+            ),
+    );
+  }
+}
+
+/// Uma nota do dia: cabeçalho com a hora da gravaçao e, embaixo, o resumo —
+/// numa linha quando fechado, item por item quando aberto.
+class _LinhaDoDia extends StatelessWidget {
+  const _LinhaDoDia({
+    required this.nota,
+    required this.aberta,
+    required this.onAbrir,
+    required this.onAlternar,
+  });
+
+  final NotaDoDia nota;
+  final bool aberta;
+  final VoidCallback onAbrir;
+  final VoidCallback onAlternar;
+
+  /// Recuo do resumo, para ele ficar sob o titulo e nao sob a etiqueta.
+  static const _recuo = 44.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            _Etiqueta(
+              texto: nota.nova ? 'nova' : 'editada',
+              destaque: nota.nova,
+            ),
+            const SizedBox(width: AppTheme.gapSm),
+            Expanded(
+              child: InkWell(
+                onTap: onAbrir,
+                borderRadius: BorderRadius.circular(AppTheme.radiusSm),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 3,
+                    horizontal: 2,
+                  ),
+                  child: Text(
+                    nota.titulo,
+                    style: theme.textTheme.titleSmall,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+            ),
+            if (nota.alteradaEm case final quando?)
+              Text(
+                _hora(quando),
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            SizedBox(
+              width: 28,
+              child: IconButton(
+                padding: EdgeInsets.zero,
+                visualDensity: VisualDensity.compact,
+                iconSize: 18,
+                icon: Icon(aberta ? Icons.expand_less : Icons.expand_more),
+                tooltip: aberta ? 'Fechar o resumo' : 'Ver o resumo',
+                onPressed: onAlternar,
+              ),
+            ),
+          ],
+        ),
+        Padding(
+          padding: const EdgeInsets.only(left: _recuo),
+          child: aberta ? _detalhe(theme, scheme) : _umaLinha(theme),
+        ),
+      ],
+    );
+  }
+
+  /// Fechado: o resumo inteiro numa linha, cortado no fim.
+  Widget _umaLinha(ThemeData theme) => Text(
+    nota.resumo,
+    style: theme.textTheme.bodySmall,
+    maxLines: 2,
+    overflow: TextOverflow.ellipsis,
+  );
+
+  Widget _detalhe(ThemeData theme, ColorScheme scheme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final topico in nota.topicos)
+          _Item(icone: Icons.circle, texto: topico, tamanhoDoIcone: 5),
+        if (nota.topicos.isEmpty && nota.feitas.isEmpty)
+          Text(nota.resumo, style: theme.textTheme.bodySmall),
+        for (final feita in nota.feitas)
+          _Item(
+            icone: Icons.check,
+            texto: feita,
+            cor: scheme.primary,
+            riscado: true,
+          ),
+        const SizedBox(height: AppTheme.gapXs),
+        Text(_rodape(), style: theme.textTheme.labelSmall),
+      ],
+    );
+  }
+
+  /// A linha de baixo: o que ficou pendente, o tamanho da nota e as tags.
+  ///
+  /// O tamanho e da nota inteira, e nao do que foi escrito hoje — quanto foi
+  /// escrito no dia e pergunta para o contador de atividade, o unico que
+  /// guarda historia. Dizer "312 palavras hoje" aqui seria inventar o numero.
+  String _rodape() {
+    final abertas = nota.abertas == 1
+        ? '1 tarefa em aberto'
+        : '${nota.abertas} tarefas em aberto';
+    final palavras = nota.palavras == 1
+        ? '1 palavra na nota'
+        : '${nota.palavras} palavras na nota';
+
+    return [
+      if (nota.abertas > 0) abertas,
+      palavras,
+      if (nota.tags.isNotEmpty) nota.tags.map((t) => '#$t').join(' '),
+    ].join('  ·  ');
+  }
+}
+
+/// Um item do resumo: bolinha para assunto, tique para tarefa riscada.
+class _Item extends StatelessWidget {
+  const _Item({
+    required this.icone,
+    required this.texto,
+    this.cor,
+    this.tamanhoDoIcone = 12,
+    this.riscado = false,
+  });
+
+  final IconData icone;
+  final String texto;
+  final Color? cor;
+  final double tamanhoDoIcone;
+  final bool riscado;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            // Alinha o icone com a primeira linha do texto em vez do topo da
+            // caixa: sem isto a bolinha flutua acima da letra.
+            padding: EdgeInsets.only(top: (14 - tamanhoDoIcone) / 2 + 2),
+            child: Icon(
+              icone,
+              size: tamanhoDoIcone,
+              color: cor ?? scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(width: AppTheme.gapSm),
+          Expanded(
+            child: Text(
+              texto,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: riscado ? scheme.onSurfaceVariant : scheme.onSurface,
+                decoration: riscado ? TextDecoration.lineThrough : null,
+                decorationColor: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Pilula de texto curto: a tag do dia e o "nova"/"editada" da nota.
+class _Etiqueta extends StatelessWidget {
+  const _Etiqueta({required this.texto, this.destaque = false});
+
+  final String texto;
+  final bool destaque;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: destaque
+            ? scheme.primary.withValues(alpha: 0.16)
+            : scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(AppTheme.radiusSm),
+      ),
+      child: Text(
+        texto,
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: destaque ? scheme.primary : scheme.onSurfaceVariant,
+        ),
+      ),
     );
   }
 }
@@ -1015,6 +1341,10 @@ String _horaCompleta(DateTime d) =>
     '${d.hour.toString().padLeft(2, '0')}:'
     '${d.minute.toString().padLeft(2, '0')}:'
     '${d.second.toString().padLeft(2, '0')}';
+
+String _hora(DateTime d) =>
+    '${d.hour.toString().padLeft(2, '0')}:'
+    '${d.minute.toString().padLeft(2, '0')}';
 
 String _diaCurto(DateTime d) =>
     '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}';

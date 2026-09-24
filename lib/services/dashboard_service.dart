@@ -18,6 +18,12 @@ class DashboardService {
 
   Future<DashboardData> build(VaultFolder root, {DateTime? agora}) async {
     final notas = <Note>[];
+
+    // A data de gravaçao ja veio na varredura da arvore. Passa junto com as
+    // notas porque o `.md` nao conta quando foi salvo — so o disco conta, e
+    // sem isso o diario nao saberia o que e de hoje.
+    final modificadas = <String, DateTime>{};
+
     for (final file in CalendarService.filesIn(root)) {
       try {
         notas.add(await _repository.readNote(file.id));
@@ -25,8 +31,14 @@ class DashboardService {
         // Nota ilegivel nao derruba o painel; ela so nao contribui com nada.
         continue;
       }
+      if (file.modificadoEm case final quando?) modificadas[file.id] = quando;
     }
-    return DashboardData.build(notas, agora: agora ?? DateTime.now());
+
+    return DashboardData.build(
+      notas,
+      agora: agora ?? DateTime.now(),
+      modificadas: modificadas,
+    );
   }
 
   /// Marca ou desmarca uma tarefa direto do painel.

@@ -39,7 +39,11 @@ class _VaultDeArquivos extends FakeVault {
       arquivos[noteId] = content;
 
   @override
-  Future<String> createNote(String folderId, String title) async {
+  Future<String> createNote(
+    String folderId,
+    String title, {
+    bool tela = false,
+  }) async {
     final id = p.join(folderId, '$title.md');
     // Espelha o modelo que o VaultService grava numa nota nova.
     arquivos[id] = '---\ntipo: nota\ntags: []\n---\n\n# $title\n\n';

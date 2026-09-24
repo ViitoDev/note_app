@@ -1,3 +1,4 @@
+import 'bloco_no_texto.dart';
 import 'tabela_da_nota.dart';
 
 /// Onde uma tabela nova entra no texto da nota.
@@ -24,53 +25,9 @@ abstract final class TabelaMarkdown {
     int cursor, {
     required int linhas,
     required int colunas,
-  }) {
-    final ponto = cursor.clamp(0, texto.length);
-    final antes = _folgaAntes(texto.substring(0, ponto));
-    final depois = _folgaDepois(texto.substring(ponto));
-    final tabela = TabelaDaNota.vazia(linhas: linhas, colunas: colunas);
-
-    return (
-      texto: texto.replaceRange(
-        ponto,
-        ponto,
-        '$antes${tabela.markdown}$depois',
-      ),
-      inicio: ponto + antes.length,
-    );
-  }
-
-  /// Uma tabela precisa de linha em branco antes dela para ser lida como
-  /// tabela; colada num paragrafo, vira mais uma linha dele.
-  ///
-  /// Sao as que faltam, e nao duas fixas: inserir num ponto que ja esta
-  /// separado abriria um buraco no meio da nota.
-  static String _folgaAntes(String antes) {
-    if (antes.trim().isEmpty) return '';
-    return '\n' * (2 - _quebrasNoFim(antes)).clamp(0, 2);
-  }
-
-  /// Do outro lado a conta e a mesma, com um detalhe: no fim do arquivo basta
-  /// uma quebra, que e o que fecha a ultima linha da tabela.
-  static String _folgaDepois(String depois) {
-    if (depois.trim().isEmpty) return '\n';
-    return '\n' * (2 - _quebrasNoComeco(depois)).clamp(0, 2);
-  }
-
-  static int _quebrasNoFim(String texto) {
-    var quantas = 0;
-    while (quantas < texto.length &&
-        texto[texto.length - 1 - quantas] == '\n') {
-      quantas++;
-    }
-    return quantas;
-  }
-
-  static int _quebrasNoComeco(String texto) {
-    var quantas = 0;
-    while (quantas < texto.length && texto[quantas] == '\n') {
-      quantas++;
-    }
-    return quantas;
-  }
+  }) => BlocoNoTexto.inserir(
+    texto,
+    cursor,
+    TabelaDaNota.vazia(linhas: linhas, colunas: colunas).markdown,
+  );
 }

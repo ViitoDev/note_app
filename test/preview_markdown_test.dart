@@ -199,4 +199,75 @@ void main() {
       'Veja [Tutorial](wikilink:Tutorial)',
     );
   });
+
+  group('a seta na leitura', () {
+    test('o -> solto e lido como seta', () {
+      expect(PreviewMarkdown.preparar('IA -> LLM'), 'IA → LLM');
+      expect(PreviewMarkdown.preparar('->\n'), '→\n');
+    });
+
+    test('grudado numa palavra continua codigo', () {
+      expect(PreviewMarkdown.preparar('ptr->campo'), 'ptr->campo');
+    });
+
+    test('a seta comprida fica como foi escrita', () {
+      expect(PreviewMarkdown.preparar('a --> b'), 'a --> b');
+    });
+
+    test('dentro de codigo, nada muda', () {
+      const bloco = '```dart\nint f() -> T\n```\n';
+      expect(PreviewMarkdown.preparar(bloco), bloco);
+      expect(
+        PreviewMarkdown.preparar('use `a -> b` aqui'),
+        'use `a -> b` aqui',
+      );
+    });
+
+    test('o arquivo nao e tocado: isto e leitura', () {
+      // A troca acontece no caminho entre o arquivo e a tela, como nos
+      // `[[links]]` — o `.md` continua com o que foi escrito.
+      const corpo = 'IA -> LLM';
+      expect(corpo, 'IA -> LLM');
+      expect(PreviewMarkdown.preparar(corpo), isNot(corpo));
+    });
+  });
+
+  group('a cerca do quadro', () {
+    /// A arvore que o preview desenha, pelas extensoes que ele usa.
+    List<md.Node> arvore(String corpo) => md.Document(
+      extensionSet: PreviewMarkdown.extensoes,
+    ).parseLines(corpo.split('\n'));
+
+    const bloco = '```quadro\n{"nos":[]}\n```';
+
+    test('vira um no proprio, e nao um bloco de codigo', () {
+      final nos = arvore('Antes\n\n$bloco\n\nDepois\n');
+      final quadro = nos.whereType<md.Element>().firstWhere(
+        (e) => e.tag == 'quadro',
+      );
+
+      expect(quadro.textContent, '{"nos":[]}');
+      // O paragrafo de antes e o de depois continuam sendo paragrafos: a cerca
+      // nao engoliu o resto da nota.
+      expect(nos.whereType<md.Element>().where((e) => e.tag == 'p').length, 2);
+      expect(nos.whereType<md.Element>().where((e) => e.tag == 'pre'), isEmpty);
+    });
+
+    test('cerca de codigo comum continua sendo codigo', () {
+      final nos = arvore('```dart\nvar a = 1;\n```\n');
+
+      expect(nos.whereType<md.Element>().single.tag, 'pre');
+    });
+
+    test('o realce de codigo nao reclama o bloco do quadro', () {
+      expect(PreviewMarkdown.linguagensDeCodigo(bloco), isEmpty);
+    });
+
+    test('o preparo do preview nao mexe no conteudo do quadro', () {
+      // As passadas de leitura tratam cerca como codigo, e la dentro o que
+      // parece marcador de lista e coordenada.
+      const corpo = 'Antes\n\n$bloco\n';
+      expect(PreviewMarkdown.preparar(corpo), contains('{"nos":[]}'));
+    });
+  });
 }

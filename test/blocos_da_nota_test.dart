@@ -95,4 +95,82 @@ void main() {
     const corpo = 'Titulo | com barra\n---\n';
     expect(BlocosDaNota.de(corpo).whereType<BlocoDeTabela>(), isEmpty);
   });
+
+  group('quadro', () {
+    const bloco =
+        '```quadro\n'
+        '{"nos":[\n'
+        '{"id":"n1","forma":"terminal","x":0,"y":0,'
+        '"largura":120,"altura":48,"texto":"Inicio"}\n'
+        '],"ligacoes":[\n'
+        ']}\n'
+        '```';
+
+    test('o quadro sai separado do texto de cima e do de baixo', () {
+      const corpo = 'Antes\n\n$bloco\n\nDepois\n';
+      final blocos = BlocosDaNota.de(corpo);
+
+      expect(blocos.length, 3);
+      expect((blocos[0] as BlocoDeTexto).texto, 'Antes\n\n');
+      expect((blocos[1] as BlocoDeQuadro).quadro.nos.single.texto, 'Inicio');
+      expect((blocos[2] as BlocoDeTexto).texto, '\n\nDepois\n');
+      _offsetsBatem(corpo);
+    });
+
+    test('o trecho do quadro e o bloco inteiro, cercas inclusive', () {
+      const corpo = 'Antes\n\n$bloco\n\nDepois\n';
+      final quadro = BlocosDaNota.de(corpo).whereType<BlocoDeQuadro>().single;
+
+      expect(corpo.substring(quadro.inicio, quadro.fim), bloco);
+    });
+
+    test('quadro vazio continua sendo quadro', () {
+      const corpo = '```quadro\n```\n';
+      final quadro = BlocosDaNota.de(corpo).whereType<BlocoDeQuadro>().single;
+
+      expect(quadro.quadro.semNada, isTrue);
+    });
+
+    test('bloco estragado fica como texto, para poder ser consertado', () {
+      const corpo = '```quadro\nnao sou json\n```\n';
+      final blocos = BlocosDaNota.de(corpo);
+
+      expect(blocos.whereType<BlocoDeQuadro>(), isEmpty);
+      expect((blocos.single as BlocoDeTexto).texto, corpo);
+    });
+
+    test('cerca sem fechamento ainda nao e quadro', () {
+      // Enquanto a cerca de baixo nao for escrita o bloco esta pela metade, e
+      // o resto da nota nao pode ser engolido por ele.
+      const corpo = '```quadro\n{"nos":[]}\ncontinua a nota\n';
+      expect(BlocosDaNota.de(corpo).whereType<BlocoDeQuadro>(), isEmpty);
+    });
+
+    test('quadro dentro de bloco de codigo continua sendo texto', () {
+      // Ali ele esta sendo mostrado como exemplo de sintaxe.
+      const corpo = '````\n```quadro\n{"nos":[]}\n```\n````\n';
+      expect(BlocosDaNota.de(corpo).whereType<BlocoDeQuadro>(), isEmpty);
+    });
+
+    test('quadro e tabela convivem na mesma nota', () {
+      const corpo = '$bloco\n\n| a |\n| --- |\n\nfim';
+      final blocos = BlocosDaNota.de(corpo);
+
+      expect(blocos.whereType<BlocoDeQuadro>().length, 1);
+      expect(blocos.whereType<BlocoDeTabela>().length, 1);
+      _offsetsBatem(corpo);
+    });
+
+    test('dois quadros saem na ordem do texto', () {
+      const corpo = '$bloco\n\nmeio\n\n```quadro\n```\n';
+      final quadros = BlocosDaNota.de(
+        corpo,
+      ).whereType<BlocoDeQuadro>().toList();
+
+      expect(quadros.length, 2);
+      expect(quadros.first.quadro.nos.length, 1);
+      expect(quadros.last.quadro.semNada, isTrue);
+      _offsetsBatem(corpo);
+    });
+  });
 }

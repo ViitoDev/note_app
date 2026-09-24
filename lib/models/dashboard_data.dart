@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'calendar_event.dart';
+import 'diario_do_dia.dart';
 import 'kanban_card.dart';
 import 'markdown_tasks.dart';
 import 'note.dart';
@@ -49,6 +50,7 @@ class DashboardData {
     required this.eventos,
     required this.board,
     required this.grafo,
+    required this.diario,
     required this.tarefas,
     required this.tags,
     required this.totalNotas,
@@ -74,6 +76,9 @@ class DashboardData {
   /// O mesmo grafo da aba de grafo. Sai desta varredura em vez de uma segunda
   /// leitura do vault — as notas ja estao na mao aqui.
   final VaultGraph grafo;
+
+  /// As notas escritas ou mexidas hoje, com o resumo de cada uma.
+  final DiarioDoDia diario;
 
   /// So as tarefas abertas: as feitas viram numero em [tarefasFeitas].
   final List<TarefaAberta> tarefas;
@@ -129,12 +134,30 @@ class DashboardData {
 
   List<KanbanCard> get emAndamento => board.of(KanbanColumn.fazendo);
 
+  /// O que esta na coluna "Fazendo" e ainda nao apareceu por data.
+  ///
+  /// Mover um card para "Fazendo" e dizer *estou nisto agora* — e isso e uma
+  /// resposta a pergunta do painel tanto quanto uma data seria. Sem isto, um
+  /// quadro cheio de trabalho em andamento convivia com um "0 para hoje" na
+  /// tela inicial, que e o contrario do que o painel existe para fazer.
+  ///
+  /// Fica de fora o que ja esta listado acima: card vencido aparece em
+  /// "atrasado", card de hoje aparece com os do dia. Aqui entram os sem data e
+  /// os de prazo ainda por vir.
+  List<KanbanCard> get cardsEmAndamento => [
+    for (final c in board.of(KanbanColumn.fazendo))
+      if (c.prazo == null || c.prazo!.isAfter(hoje)) c,
+  ];
+
   /// Um card pronto nao esta atrasado: ele foi entregue, mesmo que tarde.
   Iterable<KanbanCard> get _cardsPendentes =>
       board.todos.where((c) => c.coluna != KanbanColumn.pronto);
 
   int get totalDeHoje =>
-      eventosDeHoje.length + tarefasDeHoje.length + cardsDeHoje.length;
+      eventosDeHoje.length +
+      tarefasDeHoje.length +
+      cardsDeHoje.length +
+      cardsEmAndamento.length;
 
   int get totalAtrasado => tarefasAtrasadas.length + cardsAtrasados.length;
 
@@ -152,7 +175,14 @@ class DashboardData {
   ///
   /// [agora] entra por parametro para o teste poder fixar o dia — um painel de
   /// "hoje" que le o relogio la dentro so daria para testar por algumas horas.
-  factory DashboardData.build(Iterable<Note> notas, {required DateTime agora}) {
+  /// [modificadas] traz a data de gravaçao de cada `.md`, vinda da varredura
+  /// do vault — e o que o diario usa para saber quais notas sao de hoje. Vazio
+  /// e valido: sem ela o diario cai no `criado_em:` do frontmatter.
+  factory DashboardData.build(
+    Iterable<Note> notas, {
+    required DateTime agora,
+    Map<String, DateTime> modificadas = const {},
+  }) {
     final hoje = DateTime(agora.year, agora.month, agora.day);
 
     final crus = <CalendarEvent>[];
@@ -213,6 +243,7 @@ class DashboardData {
       eventos: eventos,
       board: KanbanBoard.build(notas),
       grafo: VaultGraph.build(notas),
+      diario: DiarioDoDia.build(notas, agora: agora, modificadas: modificadas),
       tarefas: tarefas,
       tags: Map.fromEntries(
         tags.entries.toList()..sort((a, b) {

@@ -1,5 +1,6 @@
 import 'package:markdown/markdown.dart' as md;
 
+import 'quadro_da_nota.dart';
 import 'wikilink.dart';
 
 /// O que o preview faz com o texto da nota antes de desenha-lo.
@@ -7,8 +8,20 @@ import 'wikilink.dart';
 /// Nada disso e gravado: o `.md` continua exatamente como foi escrito. Sao
 /// ajustes de leitura, aplicados no caminho entre o arquivo e a tela.
 abstract final class PreviewMarkdown {
-  static String preparar(String corpo) =>
-      Wikilink.paraMarkdown(_linhaEmBranco(_saidaDaLista(_itemVazio(corpo))));
+  static String preparar(String corpo) => Wikilink.paraMarkdown(
+    _seta(_linhaEmBranco(_finalizarLista(_saidaDaLista(_itemVazio(corpo))))),
+  );
+
+  /// As extensoes do parser, usadas em todo lugar que le o corpo da nota.
+  ///
+  /// `gitHubWeb` traz o que se espera de Markdown moderno — tabela, lista de
+  /// tarefa, ~~riscado~~ —, e na frente dele vem a cerca do quadro: ela precisa
+  /// ser reconhecida *antes* de a cerca virar bloco de codigo, senao o quadro
+  /// aparece no preview como um punhado de JSON.
+  static final extensoes = md.ExtensionSet([
+    const _CercaDeQuadro(),
+    ...md.ExtensionSet.gitHubWeb.blockSyntaxes,
+  ], md.ExtensionSet.gitHubWeb.inlineSyntaxes);
 
   /// De cada bloco ``` para a linguagem escrita na cerca dele.
   ///
@@ -18,7 +31,7 @@ abstract final class PreviewMarkdown {
   /// vai chegar la, sem depender de recontar recuo ou fim de linha na mao.
   static Map<String, String> linguagensDeCodigo(String corpo) {
     final linhas = corpo.split('\n');
-    final documento = md.Document(extensionSet: md.ExtensionSet.gitHubWeb);
+    final documento = md.Document(extensionSet: extensoes);
 
     final mapa = <String, String>{};
     void varrer(List<md.Node> nos) {
@@ -118,6 +131,59 @@ abstract final class PreviewMarkdown {
     });
   }
 
+  /// Uma linha em branco entre dois itens do mesmo tipo de lista — mesmo
+  /// marcador, mesmo recuo — e o pedido de separar uma lista da outra.
+  ///
+  /// O Markdown le esses dois blocos como uma lista so, so que "soltas"
+  /// (cada item vira um paragrafo por dentro): a linha em branco que devia
+  /// separar as duas listas so muda o espaçamento interno de uma lista unica,
+  /// e o corte que a pessoa pediu desaparece.
+  ///
+  /// Um paragrafo de largura zero entre as duas encerra a primeira lista de
+  /// verdade — o que vem depois da linha em branco deixa de ser item, entao a
+  /// lista acaba ali e a proxima começa do zero, como duas listas de fato.
+  static final _finalDeLista = RegExp(
+    // Codigo primeiro, como nas outras passadas.
+    r'(```.*?```|~~~.*?~~~)'
+    r'|(^([ \t]*)([-*+])[ \t][^\n]*)\n[ \t]*\n(?=\3\4[ \t])'
+    r'|(^([ \t]*)\d+([.)])[ \t][^\n]*)\n[ \t]*\n(?=\6\d+\7[ \t])',
+    multiLine: true,
+    dotAll: true,
+  );
+
+  static String _finalizarLista(String corpo) {
+    return corpo.replaceAllMapped(_finalDeLista, (m) {
+      final codigo = m.group(1);
+      if (codigo != null) return codigo;
+      final linha = m.group(2) ?? m.group(5)!;
+      return '$linha\n\n$_larguraZero\n\n';
+    });
+  }
+
+  /// `->` solto no meio do texto e uma seta, e e como seta que ele e lido.
+  ///
+  /// Digitando, o `->` ja vira `→` no proprio texto. Esta passada e para o que
+  /// foi escrito antes disso — e para quem escreve o `.md` em outro editor: a
+  /// nota antiga passa a ser *lida* com a seta sem que uma linha do arquivo
+  /// mude. E o mesmo trato dos `[[links]]`.
+  ///
+  /// Solto, e nao qualquer um: `ptr->campo` e codigo mesmo fora da crase, e
+  /// `-->` foi escrito assim de proposito. A regra e a mesma da tecla.
+  static final _setas = RegExp(
+    // Codigo primeiro — inclusive o de uma crase so, na mesma linha.
+    r'(```.*?```|~~~.*?~~~|`[^`\n]*`)'
+    r'|(?<![^\s])->(?![^\s])',
+    multiLine: true,
+    dotAll: true,
+  );
+
+  static String _seta(String corpo) {
+    return corpo.replaceAllMapped(_setas, (m) {
+      final codigo = m.group(1);
+      return codigo ?? '→';
+    });
+  }
+
   /// Linha em branco de sobra — a segunda seguida, a terceira — e respiro que
   /// alguem abriu de proposito, e o Markdown descarta: uma linha em branco ou
   /// dez separam os mesmos dois blocos do mesmo jeito. Escrevendo com o
@@ -144,5 +210,37 @@ abstract final class PreviewMarkdown {
       final sobra = '\n'.allMatches(m[0]!).length - 2;
       return '\n\n${'$_larguraZero\n\n' * sobra}';
     });
+  }
+}
+
+/// A cerca ```quadro vira um no proprio da arvore, e nao um bloco de codigo.
+///
+/// O parser nao sabe desenhar quadro nenhum — e nem precisa. Ele so separa o
+/// bloco do resto e entrega o conteudo inteiro num no de tag
+/// [QuadroDaNota.marcador]; quem desenha e o preview, que reconhece essa tag e
+/// monta o widget do quadro no lugar dela.
+class _CercaDeQuadro extends md.BlockSyntax {
+  const _CercaDeQuadro();
+
+  @override
+  RegExp get pattern =>
+      RegExp('^ {0,3}(```|~~~)[ \t]*${QuadroDaNota.marcador}[ \t]*\$');
+
+  @override
+  md.Node parse(md.BlockParser parser) {
+    final marca = pattern.firstMatch(parser.current.content)!.group(1)!;
+    final fechamento = RegExp('^ {0,3}$marca[ \t]*\$');
+
+    parser.advance();
+    final dentro = <String>[];
+    while (!parser.isDone && !fechamento.hasMatch(parser.current.content)) {
+      dentro.add(parser.current.content);
+      parser.advance();
+    }
+    // A cerca de baixo e consumida junto: ela pertence a este bloco, e deixada
+    // para tras abriria um bloco de codigo vazio na linha seguinte.
+    if (!parser.isDone) parser.advance();
+
+    return md.Element.text(QuadroDaNota.marcador, dentro.join('\n'));
   }
 }

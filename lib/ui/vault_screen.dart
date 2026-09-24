@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -23,6 +24,9 @@ import '../services/email_service.dart';
 import '../services/graph_service.dart';
 import '../services/kanban_service.dart';
 import '../services/vault_service.dart';
+import '../servidor/cliente_webdav.dart';
+import '../servidor/config_do_servidor.dart';
+import '../servidor/sincronizador.dart';
 import 'app_theme.dart';
 import 'calendar_screen.dart';
 import 'dashboard_screen.dart';
@@ -38,6 +42,7 @@ import 'note_editor.dart';
 import 'note_tree.dart';
 import 'panel_layout.dart';
 import 'resizable_split.dart';
+import 'servidor_config_dialog.dart';
 import 'ui_prefs.dart';
 
 /// As abas do app, escolhidas na barra de navegaçao a esquerda.
@@ -56,6 +61,23 @@ enum _View {
   final IconData iconSelecionado;
 }
 
+/// Em que pe esta a conversa com o servidor privado.
+enum _Sync {
+  /// Nenhum servidor configurado: o vault e so a pasta local.
+  desligado,
+
+  /// Configurado e parado, esperando a proxima rodada.
+  ocioso,
+
+  sincronizando,
+
+  /// A ultima tentativa falhou. O app continua funcionando: o que nao subiu
+  /// sobe na proxima.
+  erro,
+}
+
+enum _AcaoDoServidor { sincronizar, configurar }
+
 /// Tela principal: editor de nota no centro, paineis acoplaveis nas laterais.
 ///
 /// O editor e a unica coisa fixa. Arvore, calendario e grafo sao paineis que o
@@ -65,7 +87,12 @@ enum _View {
 /// Numa janela estreita nao ha barras: a arvore vira um Drawer, porque nao
 /// cabem tres colunas lado a lado.
 class VaultScreen extends StatefulWidget {
-  const VaultScreen({super.key, this.repository, this.email});
+  const VaultScreen({
+    super.key,
+    this.repository,
+    this.email,
+    this.servidorPrefs,
+  });
 
   /// Injetavel para o teste rodar sem tocar em disco. Em producao fica nulo e
   /// a tela usa o [VaultService].
@@ -73,6 +100,9 @@ class VaultScreen extends StatefulWidget {
 
   /// Idem, para o teste nao precisar de servidor IMAP.
   final EmailRepository? email;
+
+  /// Idem, para o teste nao depender do cofre de senhas do Windows.
+  final ServidorPrefs? servidorPrefs;
 
   @override
   State<VaultScreen> createState() => _VaultScreenState();
@@ -87,6 +117,8 @@ class _VaultScreenState extends State<VaultScreen> {
   late final KanbanService _kanban = KanbanService(_repository);
   late final DashboardService _dashboard = DashboardService(_repository);
   late final EmailRepository _email = widget.email ?? EmailService();
+  late final ServidorPrefs _servidorPrefs =
+      widget.servidorPrefs ?? const ServidorPrefs();
   final _editorKey = GlobalKey<NoteEditorState>();
   final _scaffoldKey = GlobalKey<ScaffoldState>();
 
@@ -141,6 +173,18 @@ class _VaultScreenState extends State<VaultScreen> {
   /// Painel que esta sendo arrastado, ou nulo. Enquanto ele nao e nulo a tela
   /// mostra onde da para soltar.
   PanelKind? _arrastando;
+
+  ConfigDoServidor _servidor = ConfigDoServidor.vazia;
+  _Sync _sync = _Sync.desligado;
+  String? _erroDaSync;
+  DateTime? _ultimaSync;
+
+  /// A rodada de fundo e a que segue o que outra maquina escreveu no servidor.
+  Timer? _relogioDaSync;
+
+  /// Espera a digitacao parar antes de subir. Sem isso, cada Ctrl+S viraria
+  /// uma ida a rede no meio da escrita.
+  Timer? _atrasoDaSync;
 
   /// Cada barra recolhe por conta propria. A da esquerda leva junto a barra de
   /// navegaçao, que fica encostada nela.
@@ -244,11 +288,34 @@ class _VaultScreenState extends State<VaultScreen> {
   @override
   void initState() {
     super.initState();
-    _restoreLastVault();
+    // As duas leituras sao independentes de proposito.
+    //
+    // O servidor ja entrou encadeado no fim da leitura do vault, e foi um
+    // erro: a pasta pode demorar — a do usuario mora num sistema de arquivos
+    // virtual — ou nem montar, e nesses casos o `then` nunca chegava. O app
+    // ficava sem servidor, sem relogio de fundo e sem icone, e nada na tela
+    // explicava por que. Quem terminar por ultimo dispara a primeira rodada;
+    // `_sincronizar` ja ignora sozinho a chamada que chega antes do vault.
+    unawaited(_restoreLastVault());
+    unawaited(_carregarServidor());
   }
 
   Future<void> _restoreLastVault() async {
-    final saved = await _repository.loadSavedVaultPath();
+    final String? saved;
+    try {
+      saved = await _repository.loadSavedVaultPath();
+    } catch (e) {
+      // Ler a preferencia nao deveria falhar, mas se falhar o desfecho util e
+      // pedir a pasta de novo — nunca uma tela travada em "carregando".
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = 'Nao foi possivel lembrar a ultima pasta: $e';
+        });
+      }
+      return;
+    }
+
     if (saved == null) {
       if (mounted) setState(() => _loading = false);
       return;
@@ -288,6 +355,10 @@ class _VaultScreenState extends State<VaultScreen> {
         _loading = false;
         _invalidarDerivados();
       });
+      // O vault ficou pronto: se ja ha servidor, e a hora da primeira rodada.
+      // Vale tambem para quem trocou de pasta com o app aberto. Fora do
+      // `await` para a rede nao segurar a abertura da tela.
+      if (_servidor.configurado) unawaited(_sincronizar());
       await _carregarDadosDosPaineis();
     } on FileSystemException catch (e) {
       if (!mounted) return;
@@ -295,10 +366,25 @@ class _VaultScreenState extends State<VaultScreen> {
         _error = 'Nao foi possivel ler a pasta:\n${e.message}';
         _loading = false;
       });
+    } catch (e) {
+      // Captura larga de proposito. O vault pode morar numa unidade de rede ou
+      // num sistema de arquivos virtual, e o que essas coisas lancam quando
+      // tropecam nao cabe numa lista. Deixar escapar daqui congela a tela em
+      // "carregando" e leva junto tudo que dependesse deste await.
+      if (!mounted) return;
+      setState(() {
+        _error = 'Nao foi possivel ler a pasta:\n$e';
+        _loading = false;
+      });
     }
   }
 
-  Future<void> _refreshTree() async {
+  /// Reconstroi a arvore a partir do disco.
+  ///
+  /// [agendarSync] desliga o aviso ao servidor na releitura que *vem* de uma
+  /// sincronizacao — senao cada rodada pediria a proxima, de tres em tres
+  /// segundos, para sempre.
+  Future<void> _refreshTree({bool agendarSync = true}) async {
     final path = _vaultPath;
     if (path == null) return;
     try {
@@ -310,6 +396,7 @@ class _VaultScreenState extends State<VaultScreen> {
         _tree = tree;
         _invalidarDerivados();
       });
+      if (agendarSync) _agendarSync();
       await _carregarDadosDosPaineis();
     } on FileSystemException catch (e) {
       _snack('Nao foi possivel reler o vault: ${e.message}');
@@ -323,6 +410,286 @@ class _VaultScreenState extends State<VaultScreen> {
     _grafoPronto = false;
     _quadroPronto = false;
     _painelPronto = false;
+  }
+
+  /// A nota acabou de ser gravada pelo app: anota a hora na arvore e derruba
+  /// o que deriva das notas.
+  ///
+  /// A arvore na tela so sabe do disco o que a ultima varredura contou. Quem
+  /// grava por aqui nao passa por ela, e o diario do painel pergunta a arvore
+  /// quando cada nota mudou — sem esta linha, escrever numa nota antiga nao a
+  /// traria para o dia de hoje ate o vault ser relido.
+  void _marcarGravada(String noteId) {
+    _tree = _tree?.comGravacao(noteId, DateTime.now());
+    _invalidarDerivados();
+    _agendarSync(nota: noteId);
+  }
+
+  // --------------------------------------------------------------- servidor
+
+  /// Intervalo da rodada de fundo. Cinco minutos e o meio-termo entre ver
+  /// depressa o que a outra maquina escreveu e nao bater no servidor a toa
+  /// enquanto ninguem mexe em nada.
+  static const _intervaloDaSync = Duration(minutes: 5);
+
+  /// Quanto tempo depois de uma mudanca de estrutura — nota criada, movida,
+  /// renomeada, apagada — a rodada completa acontece. Ela varre os dois lados,
+  /// entao vale esperar a rajada terminar.
+  static const _atrasoDaRodadaCompleta = Duration(seconds: 3);
+
+  /// Quanto tempo depois de gravar a nota sobe sozinha.
+  ///
+  /// Curto porque e barato: uma nota so, um PUT. O editor ja espera um segundo
+  /// de silencio antes de gravar, entao o texto chega ao servidor cerca de um
+  /// segundo e meio depois de voce parar de escrever.
+  static const _atrasoDeUmaNota = Duration(milliseconds: 400);
+
+  /// A nota gravada esperando para subir, quando foi so isso que mudou.
+  String? _notaPendente;
+
+  /// Alguma mudanca que a subida de uma nota so nao cobre — pasta criada, nota
+  /// movida, exclusao. Obriga a rodada completa.
+  bool _rodadaCompletaPendente = false;
+
+  Future<void> _carregarServidor() async {
+    final config = await _servidorPrefs.carregar();
+    if (!mounted || !config.configurado) return;
+    setState(() {
+      _servidor = config;
+      _sync = _Sync.ocioso;
+    });
+    _ligarRelogio();
+    await _sincronizar();
+  }
+
+  void _ligarRelogio() {
+    _relogioDaSync?.cancel();
+    _relogioDaSync = Timer.periodic(
+      _intervaloDaSync,
+      (_) => unawaited(_sincronizar()),
+    );
+  }
+
+  /// Marca que ha coisa nova para subir.
+  ///
+  /// [nota] e o caminho da que acabou de ser gravada, quando foi so isso que
+  /// mudou — e o caso comum, o de alguem escrevendo. Ai sobe so ela, que custa
+  /// um PUT. Sem [nota], ou quando duas notas diferentes mudam na mesma janela,
+  /// vai a rodada completa: e a unica que sabe de pasta criada, nota movida,
+  /// exclusao e conflito.
+  void _agendarSync({String? nota}) {
+    if (!_servidor.configurado) return;
+
+    if (nota == null) {
+      _rodadaCompletaPendente = true;
+      _notaPendente = null;
+    } else if (!_rodadaCompletaPendente) {
+      if (_notaPendente != null && _notaPendente != nota) {
+        _rodadaCompletaPendente = true;
+        _notaPendente = null;
+      } else {
+        _notaPendente = nota;
+      }
+    }
+
+    _atrasoDaSync?.cancel();
+    _atrasoDaSync = Timer(
+      _notaPendente != null ? _atrasoDeUmaNota : _atrasoDaRodadaCompleta,
+      () => unawaited(_subirOPendente()),
+    );
+  }
+
+  /// Faz o que [_agendarSync] marcou: a nota so, ou a rodada completa.
+  Future<void> _subirOPendente() async {
+    final nota = _notaPendente;
+    final raiz = _vaultPath;
+    final base = _servidor.uri;
+
+    _notaPendente = null;
+    _rodadaCompletaPendente = false;
+
+    if (nota == null || raiz == null || base == null) {
+      await _sincronizar();
+      return;
+    }
+
+    // Rodada em curso: esta subida espera a proxima janela em vez de disputar
+    // o mesmo arquivo de estado.
+    if (_sync == _Sync.sincronizando) {
+      _agendarSync(nota: nota);
+      return;
+    }
+
+    setState(() {
+      _sync = _Sync.sincronizando;
+      _erroDaSync = null;
+    });
+
+    final cliente = ClienteWebDav(
+      base: base,
+      usuario: _servidor.usuario,
+      senha: _servidor.senha,
+    );
+
+    try {
+      final subiu = await Sincronizador(
+        cliente: cliente,
+        raiz: raiz,
+      ).subirNota(p.relative(nota, from: raiz));
+      if (!mounted) return;
+
+      setState(() {
+        _sync = _Sync.ocioso;
+        _ultimaSync = DateTime.now();
+      });
+
+      // O caminho rapido devolve falso quando nao sabe resolver sozinho — nota
+      // nova, ou texto que mudou tambem no servidor. Quem decide e a rodada
+      // completa, que compara o conteudo e guarda a copia de conflito.
+      if (!subiu) await _sincronizar();
+    } on ServidorException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _sync = _Sync.erro;
+        _erroDaSync = e.mensagem;
+      });
+    } on FileSystemException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _sync = _Sync.erro;
+        _erroDaSync = 'Falha ao ler a nota: ${e.message}';
+      });
+    } finally {
+      cliente.fechar();
+    }
+  }
+
+  Future<void> _sincronizar({bool avisar = false}) async {
+    final raiz = _vaultPath;
+    final base = _servidor.uri;
+    if (raiz == null || base == null) return;
+    // Duas rodadas ao mesmo tempo disputariam os mesmos arquivos e o mesmo
+    // estado; a segunda espera a proxima vez.
+    if (_sync == _Sync.sincronizando) return;
+
+    setState(() {
+      _sync = _Sync.sincronizando;
+      _erroDaSync = null;
+    });
+
+    final cliente = ClienteWebDav(
+      base: base,
+      usuario: _servidor.usuario,
+      senha: _servidor.senha,
+    );
+
+    try {
+      final resultado = await Sincronizador(
+        cliente: cliente,
+        raiz: raiz,
+      ).sincronizar();
+      if (!mounted) return;
+
+      setState(() {
+        _sync = _Sync.ocioso;
+        _ultimaSync = DateTime.now();
+      });
+
+      final mudouODisco =
+          resultado.baixados.isNotEmpty ||
+          resultado.apagadosAqui.isNotEmpty ||
+          resultado.conflitos.isNotEmpty;
+      if (mudouODisco) await _relerDepoisDaSync(raiz, resultado);
+
+      // Conflito sempre e dito, mesmo numa rodada de fundo: uma copia que
+      // aparece no vault sem ninguem avisar e uma copia que ninguem le.
+      if (resultado.conflitos.isNotEmpty) {
+        _snack(
+          'A mesma nota mudou aqui e no servidor. A versao de la ficou '
+          'guardada ao lado: ${resultado.conflitos.join(', ')}',
+        );
+      } else if (avisar) {
+        _snack(resultado.resumo);
+      }
+    } on ServidorException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _sync = _Sync.erro;
+        _erroDaSync = e.mensagem;
+      });
+      // Falha de fundo nao interrompe quem esta escrevendo: o indicador na
+      // barra conta, e o que nao subiu sobe na proxima rodada.
+      if (avisar) _snack(e.mensagem);
+    } on FileSystemException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _sync = _Sync.erro;
+        _erroDaSync = 'Falha ao gravar no vault: ${e.message}';
+      });
+      if (avisar) _snack(_erroDaSync!);
+    } finally {
+      cliente.fechar();
+    }
+  }
+
+  /// Poe na tela o que a sincronizacao mudou no disco.
+  ///
+  /// A ordem da arvore e o historico de escrita tambem viajam pelo servidor, e
+  /// os dois vivem em memoria aqui — reler so a arvore deixaria a ordem antiga
+  /// sendo reaplicada por cima da que acabou de chegar.
+  Future<void> _relerDepoisDaSync(
+    String raiz,
+    ResultadoDaSync resultado,
+  ) async {
+    try {
+      final order = await _repository.loadOrder(raiz);
+      final atividade = await _repository.loadAtividade(raiz);
+      if (!mounted) return;
+      setState(() {
+        _order = order;
+        _atividade = atividade;
+      });
+    } on FileSystemException {
+      // Sem a ordem nova a arvore volta ao alfabetico, o que nao justifica
+      // abandonar o resto da releitura.
+    }
+
+    await _refreshTree(agendarSync: false);
+
+    // A nota aberta pode ter sido justamente uma das que desceram. Com edicao
+    // pendente ela fica como esta: sobrescrever o que o usuario acabou de
+    // digitar seria trocar um conflito resolvido por um dado perdido.
+    final aberta = _openNote?.id;
+    if (aberta == null || _dirty) return;
+    final baixadas = resultado.baixados.map(
+      (c) => p.join(raiz, p.joinAll(c.split('/'))),
+    );
+    if (baixadas.any((caminho) => p.equals(caminho, aberta))) {
+      await _reabrir(aberta);
+    }
+  }
+
+  Future<void> _configurarServidor() async {
+    final config = await showServidorConfigDialog(context, atual: _servidor);
+    if (config == null || !mounted) return;
+
+    _relogioDaSync?.cancel();
+    setState(() {
+      _servidor = config;
+      _erroDaSync = null;
+      _sync = config.configurado ? _Sync.ocioso : _Sync.desligado;
+    });
+    if (!config.configurado) return;
+
+    _ligarRelogio();
+    await _sincronizar(avisar: true);
+  }
+
+  @override
+  void dispose() {
+    _relogioDaSync?.cancel();
+    _atrasoDaSync?.cancel();
+    super.dispose();
   }
 
   bool get _precisaCalendario =>
@@ -428,7 +795,7 @@ class _VaultScreenState extends State<VaultScreen> {
     // texto na tela continuaria com a caixa vazia.
     if (_openNote?.id == noteId && !_dirty) await _reabrir(noteId);
 
-    setState(_invalidarDerivados);
+    setState(() => _marcarGravada(noteId));
     await _carregarDadosDosPaineis();
   }
 
@@ -442,7 +809,7 @@ class _VaultScreenState extends State<VaultScreen> {
     final raiz = _tree;
     if (raiz == null) return;
 
-    final titulo = await showDialog<String>(
+    final pedido = await showDialog<({String nome, bool tela})>(
       context: context,
       builder: (context) => _NomeDialog(
         titulo: 'Novo card em ${coluna.label}',
@@ -451,10 +818,10 @@ class _VaultScreenState extends State<VaultScreen> {
         acao: 'Criar',
       ),
     );
-    if (titulo == null || titulo.trim().isEmpty) return;
+    if (pedido == null || pedido.nome.trim().isEmpty) return;
 
     try {
-      final id = await _repository.createNote(raiz.id, titulo.trim());
+      final id = await _repository.createNote(raiz.id, pedido.nome.trim());
       final nota = await _repository.readNote(id);
       // O `status:` entra por cima do frontmatter que a nota ja nasce tendo,
       // em vez de a criaçao ganhar um parametro que so o quadro usaria.
@@ -485,7 +852,7 @@ class _VaultScreenState extends State<VaultScreen> {
       await _reabrir(card.noteId);
     }
 
-    setState(_invalidarDerivados);
+    setState(() => _marcarGravada(card.noteId));
     await _carregarDadosDosPaineis();
   }
 
@@ -713,16 +1080,20 @@ class _VaultScreenState extends State<VaultScreen> {
       await _repository.writeNote(note.id, content);
       await _registrarAtividade(note.raw, content);
       if (!mounted) return;
-      if (_openNote?.id == note.id) {
-        setState(() {
+      setState(() {
+        // O texto gravado muda tags, links e datas: o que deriva das notas
+        // fica velho na hora.
+        _marcarGravada(note.id);
+        // A gravaçao pode chegar depois de a nota ter saido da tela — quem
+        // troca de nota descarrega o que estava pendente. Nesse caso o editor
+        // ja mostra outra coisa, e mexer em `_dirty` apagaria o aviso de que a
+        // nota nova esta por gravar.
+        if (_openNote?.id == note.id) {
           _openNote = note.copyWithRaw(content);
           _dirty = false;
-          // O texto gravado muda tags, links e datas: o que deriva das notas
-          // fica velho na hora.
-          _invalidarDerivados();
-        });
-        await _carregarDadosDosPaineis();
-      }
+        }
+      });
+      await _carregarDadosDosPaineis();
     } on FileSystemException catch (e) {
       _snack('Falha ao salvar: ${e.message}');
       rethrow;
@@ -733,19 +1104,24 @@ class _VaultScreenState extends State<VaultScreen> {
     if (!await _garantirSalvo()) return;
     if (!mounted) return;
 
-    final title = await showDialog<String>(
+    final pedido = await showDialog<({String nome, bool tela})>(
       context: context,
       builder: (context) => const _NomeDialog(
         titulo: 'Nova nota',
         rotulo: 'Titulo',
         dica: 'Ex.: Estudo de React Hooks',
         acao: 'Criar',
+        ofereceTela: true,
       ),
     );
-    if (title == null) return;
+    if (pedido == null) return;
 
     try {
-      final created = await _repository.createNote(folder.id, title);
+      final created = await _repository.createNote(
+        folder.id,
+        pedido.nome,
+        tela: pedido.tela,
+      );
       await _refreshTree();
       final note = await _repository.readNote(created);
       if (!mounted) return;
@@ -763,7 +1139,7 @@ class _VaultScreenState extends State<VaultScreen> {
     if (!await _garantirSalvo()) return;
     if (!mounted) return;
 
-    final name = await showDialog<String>(
+    final pedido = await showDialog<({String nome, bool tela})>(
       context: context,
       builder: (context) => const _NomeDialog(
         titulo: 'Nova pasta',
@@ -772,10 +1148,10 @@ class _VaultScreenState extends State<VaultScreen> {
         acao: 'Criar',
       ),
     );
-    if (name == null) return;
+    if (pedido == null) return;
 
     try {
-      await _repository.createFolder(folder.id, name);
+      await _repository.createFolder(folder.id, pedido.nome);
       await _refreshTree();
     } on FileSystemException catch (e) {
       _snack('Nao foi possivel criar a pasta: ${e.message}');
@@ -875,7 +1251,7 @@ class _VaultScreenState extends State<VaultScreen> {
     final ehPasta = entry is VaultFolder;
     final atual = ehPasta ? entry.name : p.basenameWithoutExtension(entry.name);
 
-    final novo = await showDialog<String>(
+    final pedido = await showDialog<({String nome, bool tela})>(
       context: context,
       builder: (context) => _NomeDialog(
         titulo: ehPasta ? 'Renomear a pasta' : 'Renomear a nota',
@@ -885,6 +1261,7 @@ class _VaultScreenState extends State<VaultScreen> {
         inicial: atual,
       ),
     );
+    final novo = pedido?.nome;
     if (novo == null || novo.trim().isEmpty || novo.trim() == atual) return;
 
     final String id;
@@ -923,9 +1300,9 @@ class _VaultScreenState extends State<VaultScreen> {
 
   /// Apaga uma nota ou uma pasta, depois de confirmar.
   ///
-  /// Nao ha desfazer aqui de proposito: o vault vive no Google Drive, e o que
-  /// e apagado vai para a lixeira do Drive. Reimplementar uma lixeira propria
-  /// por cima de outra so criaria dois lugares para procurar.
+  /// Nao ha desfazer aqui, e por isso o aviso do dialogo e direto: com o
+  /// servidor privado no lugar do Drive, nao existe mais uma lixeira na nuvem
+  /// atras desta — o que sai daqui sai tambem de la na proxima rodada.
   Future<void> _excluir(VaultEntry entry) async {
     final pasta = entry is VaultFolder ? entry : null;
     final confirmou = await showDialog<bool>(
@@ -944,9 +1321,9 @@ class _VaultScreenState extends State<VaultScreen> {
             ),
             const SizedBox(height: AppTheme.gapMd),
             Text(
-              'Como o vault vive no Google Drive, a exclusao sobe junto e o '
-              'arquivo some das outras maquinas. Da para recuperar na lixeira '
-              'do Drive.',
+              'A exclusao sobe ao servidor na proxima sincronizacao e o '
+              'arquivo some das outras maquinas. Nao ha lixeira: so o backup '
+              'do servidor traz de volta.',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -1038,19 +1415,11 @@ class _VaultScreenState extends State<VaultScreen> {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            if (_vaultPath != null) ...[
-              const SizedBox(width: AppTheme.gapMd),
-              // Sinaliza que o vault esta na nuvem sem ocupar uma linha de UI.
-              Tooltip(
-                message: 'O vault vive no Google Drive e sobe sozinho',
-                child: Icon(
-                  Icons.cloud_done_outlined,
-                  size: 15,
-                  color: Theme.of(
-                    context,
-                  ).colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
-                ),
-              ),
+            // Aparece tambem sem vault aberto: e justamente quando a pasta
+            // nao monta que o usuario precisa ver que ha um servidor ali.
+            if (_vaultPath != null || _servidor.configurado) ...[
+              const SizedBox(width: AppTheme.gapSm),
+              _indicadorDoServidor(),
             ],
           ],
         ),
@@ -1129,6 +1498,74 @@ class _VaultScreenState extends State<VaultScreen> {
             ),
     );
   }
+
+  /// Como esta a conversa com o servidor, e o menu para agir sobre ela.
+  ///
+  /// Um controle so, no lugar onde antes ficava o icone do Drive: "esta em
+  /// dia?" e "sobe agora" sao a mesma pergunta feita de dois jeitos, e separar
+  /// as duas so gastaria mais barra.
+  Widget _indicadorDoServidor() {
+    final theme = Theme.of(context);
+    final apagado = theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.7);
+    final onde = _servidor.uri?.host ?? 'o servidor';
+
+    final (IconData icone, Color cor, String recado) = switch (_sync) {
+      _Sync.desligado => (
+        Icons.cloud_off_outlined,
+        apagado,
+        'Sem servidor: o vault e so esta pasta.',
+      ),
+      _Sync.sincronizando => (
+        Icons.cloud_sync_outlined,
+        theme.colorScheme.primary,
+        'Sincronizando com $onde...',
+      ),
+      _Sync.erro => (
+        Icons.cloud_off,
+        theme.colorScheme.error,
+        _erroDaSync ?? 'A ultima sincronizacao falhou.',
+      ),
+      _Sync.ocioso => (
+        Icons.cloud_done_outlined,
+        apagado,
+        _ultimaSync == null
+            ? 'Ligado a $onde.'
+            : 'Em dia com $onde — ultima as ${_hora(_ultimaSync!)}.',
+      ),
+    };
+
+    return PopupMenuButton<_AcaoDoServidor>(
+      tooltip: recado,
+      position: PopupMenuPosition.under,
+      icon: Icon(icone, size: 15, color: cor),
+      iconSize: 15,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 220),
+      onSelected: (acao) {
+        switch (acao) {
+          case _AcaoDoServidor.sincronizar:
+            unawaited(_sincronizar(avisar: true));
+          case _AcaoDoServidor.configurar:
+            unawaited(_configurarServidor());
+        }
+      },
+      itemBuilder: (_) => [
+        PopupMenuItem(
+          value: _AcaoDoServidor.sincronizar,
+          enabled: _servidor.configurado && _sync != _Sync.sincronizando,
+          child: const Text('Sincronizar agora'),
+        ),
+        const PopupMenuItem(
+          value: _AcaoDoServidor.configurar,
+          child: Text('Configurar o servidor...'),
+        ),
+      ],
+    );
+  }
+
+  static String _hora(DateTime q) =>
+      '${q.hour.toString().padLeft(2, '0')}:'
+      '${q.minute.toString().padLeft(2, '0')}';
 
   Widget _rail() {
     final theme = Theme.of(context);
@@ -1261,14 +1698,29 @@ class _VaultScreenState extends State<VaultScreen> {
       );
     }
     if (tree == null) {
+      // Com servidor configurado a tela vazia muda de assunto. Quem chega aqui
+      // com as notas ja no servidor — maquina nova, pasta que nao montou —
+      // precisa saber que basta apontar um lugar e elas descem. Sem isto o app
+      // pede "a pasta de arquivos .md" para alguem que, nesta maquina, nao tem
+      // nenhum, e nao ha nada na tela dizendo que o servidor resolve.
+      final noServidor = _servidor.configurado;
       return _CenteredMessage(
-        icon: Icons.folder_special_outlined,
-        title: 'Escolha a pasta do vault',
-        detail:
-            'Aponte para a pasta de arquivos .md dentro do Google Drive. Os '
-            'arquivos continuam sendo a fonte da verdade — o app so le e grava '
-            'neles, e o Drive cuida de subir para a nuvem.',
-        actionLabel: 'Escolher pasta',
+        icon: noServidor
+            ? Icons.cloud_download_outlined
+            : Icons.folder_special_outlined,
+        title: noServidor
+            ? 'Escolha onde guardar as notas'
+            : 'Escolha a pasta do vault',
+        detail: noServidor
+            ? 'Suas notas estao em ${_servidor.uri?.host}. Escolha uma pasta '
+                  'nesta maquina — pode estar vazia — e elas descem na '
+                  'primeira sincronizacao. Uma pasta que ja tenha .md tambem '
+                  'serve: os dois lados se juntam, e nada e descartado.'
+            : 'Aponte para a pasta de arquivos .md. Os arquivos continuam '
+                  'sendo a fonte da verdade — o app so le e grava neles, e o '
+                  'servidor privado, se configurado, mantem as outras '
+                  'maquinas iguais.',
+        actionLabel: noServidor ? 'Escolher pasta e baixar' : 'Escolher pasta',
         onAction: _chooseVault,
       );
     }
@@ -1670,6 +2122,7 @@ class _NomeDialog extends StatefulWidget {
     required this.dica,
     required this.acao,
     this.inicial,
+    this.ofereceTela = false,
   });
 
   final String titulo;
@@ -1680,6 +2133,14 @@ class _NomeDialog extends StatefulWidget {
   /// Nome que ja existe, para renomear partir dele em vez de de um campo em
   /// branco.
   final String? inicial;
+
+  /// Se este dialogo pergunta tambem que *tipo* de nota criar.
+  ///
+  /// Aqui, junto do nome, e nao num terceiro botao na arvore de arquivos: a
+  /// arvore ja tem dois botoes por pasta, e o terceiro faria a linha de cada
+  /// pasta virar uma barra de ferramentas. E a escolha e da mesma conversa —
+  /// "uma nota nova, chamada assim, deste tipo".
+  final bool ofereceTela;
 
   @override
   State<_NomeDialog> createState() => _NomeDialogState();
@@ -1700,20 +2161,59 @@ class _NomeDialogState extends State<_NomeDialog> {
     super.dispose();
   }
 
-  void _submit() => Navigator.pop(context, _controller.text);
+  /// Se o que se esta criando e uma tela de desenho.
+  bool _tela = false;
+
+  void _submit() =>
+      Navigator.pop(context, (nome: _controller.text, tela: _tela));
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.titulo),
-      content: TextField(
-        controller: _controller,
-        autofocus: true,
-        decoration: InputDecoration(
-          labelText: widget.rotulo,
-          hintText: widget.dica,
-        ),
-        onSubmitted: (_) => _submit(),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            decoration: InputDecoration(
+              labelText: widget.rotulo,
+              hintText: widget.dica,
+            ),
+            onSubmitted: (_) => _submit(),
+          ),
+          if (widget.ofereceTela) ...[
+            const SizedBox(height: AppTheme.gapLg),
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(
+                  value: false,
+                  icon: Icon(Icons.description_outlined, size: 15),
+                  label: Text('Texto'),
+                ),
+                ButtonSegment(
+                  value: true,
+                  icon: Icon(Icons.gesture, size: 15),
+                  label: Text('Tela'),
+                ),
+              ],
+              selected: {_tela},
+              showSelectedIcon: false,
+              style: const ButtonStyle(visualDensity: VisualDensity.compact),
+              onSelectionChanged: (escolha) =>
+                  setState(() => _tela = escolha.first),
+            ),
+            const SizedBox(height: AppTheme.gapXs),
+            Text(
+              _tela
+                  ? 'Uma area de desenho sem fim, que ocupa a nota inteira.'
+                  : 'Uma nota de Markdown, com preview ao lado.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ],
       ),
       actions: [
         TextButton(

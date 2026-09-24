@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../models/tabela_da_nota.dart';
 import 'app_theme.dart';
+import 'seta_ao_digitar.dart';
 
 /// A tabela desenhada como grade dentro do editor, com cada celula editavel.
 ///
@@ -210,7 +211,13 @@ class _TabelaEditavelState extends State<TabelaEditavel> {
       // A quebra que o desenho faz sozinho e uma coisa; a que se digita e
       // outra. No Markdown, uma linha da tabela e uma linha do arquivo, entao
       // o Enter e barrado na entrada, antes de virar texto.
-      inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'\n'))],
+      //
+      // A seta vem junto: a celula e texto da nota como qualquer outro, e
+      // seria estranho o `->` virar seta no paragrafo e nao na tabela.
+      inputFormatters: [
+        FilteringTextInputFormatter.deny(RegExp(r'\n')),
+        const SetaAoDigitar(),
+      ],
       cursorColor: theme.colorScheme.primary,
       cursorWidth: 1.6,
       textAlign: switch (widget.tabela.alinhamentos[coluna]) {

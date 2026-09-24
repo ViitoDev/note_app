@@ -178,6 +178,46 @@ void main() {
       expect(dados.semNada, isFalse);
       expect(_painel(const []).semNada, isTrue);
     });
+
+    group('o que esta em "Fazendo"', () {
+      test('entra no dia mesmo sem data nenhuma', () {
+        // Mover um card para "Fazendo" e dizer *estou nisto agora*. Sem isto,
+        // um quadro cheio de trabalho em andamento convivia com um "0 para
+        // hoje" na tela inicial.
+        final dados = _painel([
+          _nota('Ler modulo 1 de IA', '---\nstatus: fazendo\n---\n'),
+        ]);
+
+        expect(dados.cardsEmAndamento.single.titulo, 'Ler modulo 1 de IA');
+        expect(dados.totalDeHoje, 1);
+        expect(dados.diaLimpo, isFalse);
+      });
+
+      test('card de outra coluna sem data continua fora do dia', () {
+        final dados = _painel([
+          _nota('Um dia', '---\nstatus: a-fazer\n---\n'),
+          _nota('Entregue', '---\nstatus: pronto\n---\n'),
+        ]);
+
+        expect(dados.cardsEmAndamento, isEmpty);
+        expect(dados.diaLimpo, isTrue);
+      });
+
+      test('nao aparece duas vezes: quem tem data ja foi listado', () {
+        final dados = _painel([
+          _nota('Hoje', '---\nstatus: fazendo\ndata: 2026-08-09\n---\n'),
+          _nota('Vencido', '---\nstatus: fazendo\ndata: 2026-08-01\n---\n'),
+          _nota('Depois', '---\nstatus: fazendo\ndata: 2026-08-20\n---\n'),
+        ]);
+
+        // O de hoje sai na lista do dia, o vencido em "atrasado", e so o de
+        // prazo distante — que esta sendo feito antes da hora — sobra aqui.
+        expect(dados.cardsDeHoje.single.titulo, 'Hoje');
+        expect(dados.cardsAtrasados.single.titulo, 'Vencido');
+        expect(dados.cardsEmAndamento.single.titulo, 'Depois');
+        expect(dados.totalDeHoje, 2);
+      });
+    });
   });
 
   group('resumo do vault', () {

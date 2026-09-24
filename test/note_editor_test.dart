@@ -7,9 +7,14 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:notas_app/models/kanban_card.dart';
+import 'package:notas_app/models/nota_de_quadro.dart';
 import 'package:notas_app/models/note.dart';
+import 'package:notas_app/models/quadro_da_nota.dart';
 import 'package:notas_app/ui/app_theme.dart';
+import 'package:notas_app/ui/desenho_do_quadro.dart';
 import 'package:notas_app/ui/note_editor.dart';
+import 'package:notas_app/ui/quadro_no_texto.dart';
+import 'package:notas_app/ui/quadro_tela_cheia.dart';
 import 'package:notas_app/ui/realce_de_codigo.dart';
 import 'package:notas_app/ui/tabela_editavel.dart';
 import 'package:notas_app/ui/wikilink_suggestions.dart';
@@ -1604,5 +1609,374 @@ void main() {
     // Sem isto a nota nova abriria no meio, na altura em que a anterior tinha
     // parado — o editor e o mesmo widget entre uma nota e outra.
     expect(posicao(), 0);
+  });
+
+  group('a seta ao digitar', () {
+    testWidgets('o -> escrito no editor vira seta no arquivo', (tester) async {
+      var gravado = '';
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.dark,
+          home: Scaffold(
+            body: NoteEditor(
+              note: Note.parse('/vault/n.md', ''),
+              onSave: (texto) async => gravado = texto,
+              onDirtyChanged: (_) {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Duas entradas seguidas: a segunda acrescenta so o `>`, que e o que o
+      // campo entrega ao formatador quando a tecla e apertada.
+      final campo = find.byType(TextField).first;
+      await tester.enterText(campo, 'LLM -');
+      await tester.enterText(campo, 'LLM ->');
+      await tester.pumpAndSettle();
+
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+
+      expect(gravado, 'LLM →');
+      // E o preview mostra a seta, e nao os dois sinais.
+      expect(find.textContaining('LLM →', findRichText: true), findsWidgets);
+    });
+
+    testWidgets('dentro de um bloco de codigo o -> continua como esta', (
+      tester,
+    ) async {
+      var gravado = '';
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.dark,
+          home: Scaffold(
+            body: NoteEditor(
+              note: Note.parse('/vault/n.md', '```dart\n'),
+              onSave: (texto) async => gravado = texto,
+              onDirtyChanged: (_) {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final campo = find.byType(TextField).first;
+      await tester.enterText(campo, '```dart\nint f() -');
+      await tester.enterText(campo, '```dart\nint f() ->');
+      await tester.pumpAndSettle();
+
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+
+      expect(gravado, contains('int f() ->'));
+    });
+  });
+
+  group('quadro', () {
+    /// Um quadro pronto no corpo da nota, com duas caixas ligadas.
+    const desenhado =
+        '```quadro\n'
+        '{"nos":[\n'
+        '{"id":"n1","forma":"terminal","x":0,"y":0,'
+        '"largura":120,"altura":48,"texto":"Inicio"},\n'
+        '{"id":"n2","forma":"processo","x":0,"y":120,'
+        '"largura":160,"altura":56,"texto":"Ler o numero"}\n'
+        '],"ligacoes":[\n'
+        '{"de":"n1","para":"n2"}\n'
+        ']}\n'
+        '```';
+
+    /// Monta o editor e devolve o que estiver gravado a cada momento.
+    Future<String Function()> montar(WidgetTester tester, String corpo) async {
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      var gravado = '';
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.dark,
+          home: Scaffold(
+            body: NoteEditor(
+              note: Note.parse('/vault/n.md', corpo),
+              onSave: (texto) async => gravado = texto,
+              onDirtyChanged: (_) {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return () => gravado;
+    }
+
+    Future<void> gravar(WidgetTester tester) async {
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('o menu oferece inserir quadro', (tester) async {
+      await montar(tester, '');
+      await tester.tap(
+        find.byType(TextField).first,
+        buttons: kSecondaryMouseButton,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Inserir quadro'), findsOneWidget);
+    }, variant: TargetPlatformVariant.desktop());
+
+    testWidgets('o quadro escrito sai desenhado, e nao em JSON', (
+      tester,
+    ) async {
+      await montar(tester, 'Antes\n\n$desenhado\n\nDepois');
+
+      // Um cartao de cada lado da tela: o do editor e o do preview.
+      expect(find.byType(QuadroNoTexto), findsNWidgets(2));
+      // Nenhum campo de texto mostra as coordenadas: elas estao no arquivo, e
+      // nao na tela.
+      for (final campo in tester.widgetList<TextField>(
+        find.byType(TextField),
+      )) {
+        expect(campo.controller?.text ?? '', isNot(contains('"nos"')));
+      }
+      expect(find.text('Quadro · 2 caixas'), findsWidgets);
+    });
+
+    testWidgets('clicar no cartao abre o quadro em tela cheia', (tester) async {
+      await montar(tester, desenhado);
+
+      await tester.tap(find.byType(QuadroNoTexto).first);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(QuadroTelaCheia), findsOneWidget);
+      // A barra de formas esta a mao: e por ela que a proxima caixa nasce.
+      expect(find.byTooltip('Criar Decisao'), findsOneWidget);
+    });
+
+    testWidgets('a caixa criada na tela cheia vai para o arquivo', (
+      tester,
+    ) async {
+      final gravado = await montar(tester, desenhado);
+
+      await tester.tap(find.byType(QuadroNoTexto).first);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Criar Decisao'));
+      await tester.pumpAndSettle();
+
+      // A caixa nova nasce com o cursor dentro dela.
+      final campo = find.descendant(
+        of: find.byType(QuadroTelaCheia),
+        matching: find.byType(TextField),
+      );
+      expect(campo, findsOneWidget);
+      await tester.enterText(campo, 'E par?');
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Fechar'));
+      await tester.pumpAndSettle();
+      await gravar(tester);
+
+      expect(gravado(), contains('"forma":"decisao"'));
+      expect(gravado(), contains('E par?'));
+      // O que ja estava continua onde estava.
+      expect(gravado(), contains('Ler o numero'));
+      expect(find.text('Quadro · 3 caixas'), findsWidgets);
+    });
+
+    testWidgets('excluir tira o quadro da nota', (tester) async {
+      final gravado = await montar(tester, 'Antes\n\n$desenhado\n\nDepois');
+
+      // A barra de açoes aparece com o mouse em cima do cartao, como na tabela.
+      final rato = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await rato.addPointer(
+        location: tester.getCenter(find.byType(QuadroNoTexto).first),
+      );
+      addTearDown(rato.removePointer);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Excluir'));
+      await tester.pumpAndSettle();
+      await gravar(tester);
+
+      expect(gravado(), isNot(contains('quadro')));
+      expect(gravado(), contains('Antes'));
+      expect(gravado(), contains('Depois'));
+    });
+
+    testWidgets('inserir pelo menu escreve o bloco e abre o quadro', (
+      tester,
+    ) async {
+      final gravado = await montar(tester, 'Antes');
+
+      await tester.tap(
+        find.byType(TextField).first,
+        buttons: kSecondaryMouseButton,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Inserir quadro'));
+      await tester.pumpAndSettle();
+
+      // Quem pediu um quadro quer desenhar: ele abre na hora.
+      expect(find.byType(QuadroTelaCheia), findsOneWidget);
+      expect(find.text('Quadro vazio'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Fechar'));
+      await tester.pumpAndSettle();
+      await gravar(tester);
+
+      expect(gravado(), contains('```quadro'));
+      expect(gravado(), contains('Antes'));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+  });
+
+  group('a nota que e uma tela', () {
+    /// Monta o editor com uma nota qualquer e devolve o que foi gravado.
+    Future<String Function()> montar(
+      WidgetTester tester,
+      String nome,
+      String conteudo, {
+      ValueChanged<String>? onAbrirLink,
+    }) async {
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      var gravado = '';
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.dark,
+          home: Scaffold(
+            body: NoteEditor(
+              note: Note.parse('/vault/$nome', conteudo, name: nome),
+              onSave: (texto) async => gravado = texto,
+              onDirtyChanged: (_) {},
+              onAbrirLink: onAbrirLink,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return () => gravado;
+    }
+
+    testWidgets('o `.quadro.md` abre desenhado, e nao como texto', (
+      tester,
+    ) async {
+      await montar(
+        tester,
+        'mapa.quadro.md',
+        NotaDeQuadro.nova('Mapa', '2026-09-22'),
+      );
+
+      // A area de desenho ocupa o editor inteiro: os botoes de editar,
+      // visualizar e dividir respondem a perguntas que uma tela nao faz.
+      expect(find.byType(QuadroTelaCheia), findsOneWidget);
+      expect(find.text('Dividido'), findsNothing);
+      // E sem X: fechar a tela seria fechar a nota, e isso se pede na arvore.
+      expect(find.byTooltip('Fechar'), findsNothing);
+      // O titulo nao carrega o `.quadro` pendurado.
+      expect(find.text('mapa'), findsOneWidget);
+    });
+
+    testWidgets('a nota comum continua abrindo como texto', (tester) async {
+      await montar(tester, 'aula.md', '# Aula\n\nTexto.\n');
+
+      expect(find.byType(QuadroTelaCheia), findsNothing);
+      expect(find.byType(TextField), findsWidgets);
+    });
+
+    testWidgets('a caixa criada na tela vai para o arquivo da nota', (
+      tester,
+    ) async {
+      final gravado = await montar(
+        tester,
+        'mapa.quadro.md',
+        NotaDeQuadro.nova('Mapa', '2026-09-22'),
+      );
+
+      await tester.tap(find.byTooltip('Criar Processo'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(QuadroTelaCheia),
+          matching: find.byType(TextField),
+        ),
+        'Primeiro passo',
+      );
+      // A gravaçao automatica e a mesma de sempre: o quadro sai daqui pelo
+      // mesmo caminho por onde sai uma letra digitada.
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+
+      expect(gravado(), contains('```quadro'));
+      expect(gravado(), contains('Primeiro passo'));
+      // O frontmatter atravessou inteiro.
+      expect(gravado(), startsWith('---\n'));
+      expect(gravado(), contains('criado_em: 2026-09-22'));
+    });
+
+    testWidgets('o `.excalidraw` abre so para olhar', (tester) async {
+      final gravado = await montar(
+        tester,
+        'diagrama.excalidraw',
+        '{"type":"excalidraw","elements":['
+            '{"id":"a","type":"rectangle","x":0,"y":0,'
+            '"width":200,"height":100}'
+            ']}',
+      );
+
+      expect(find.text('so leitura'), findsOneWidget);
+      // Nao ha como criar nem desenhar: regravar o arquivo daqui apagaria dele
+      // tudo o que este app nao entende.
+      expect(find.byTooltip('Criar Processo'), findsNothing);
+      expect(find.byTooltip('Caneta (C)'), findsNothing);
+      // As duas saidas estao a mao.
+      expect(find.text('Copiar para uma nota'), findsOneWidget);
+
+      await tester.pump(const Duration(seconds: 2));
+      expect(gravado(), isEmpty);
+    });
+
+    testWidgets('a caixa que e um `[[link]]` abre a nota apontada', (
+      tester,
+    ) async {
+      final abertas = <String>[];
+      final corpo = NotaDeQuadro.comQuadro(
+        '',
+        const QuadroDaNota(
+          nos: [
+            NoDoQuadro(
+              id: 'n1',
+              forma: FormaDoNo.processo,
+              x: 0,
+              y: 0,
+              largura: 200,
+              altura: 80,
+              texto: '[[Aula de calculo]]',
+            ),
+          ],
+          ligacoes: [],
+        ),
+      );
+
+      await montar(tester, 'mapa.quadro.md', corpo, onAbrirLink: abertas.add);
+
+      final tela = find.byWidgetPredicate(
+        (w) => w is CustomPaint && w.painter is QuadroPintado,
+      );
+      // A tela enquadra o desenho na primeira medida, e este desenho e uma
+      // caixa so: enquadrado, o centro dela cai no centro da area.
+      final centro = tester.getCenter(tela);
+
+      await tester.tapAt(centro);
+      await tester.pump(const Duration(milliseconds: 40));
+      await tester.tapAt(centro);
+      await tester.pumpAndSettle();
+
+      // Duplo clique num atalho leva a nota, e nao abre o cursor nele.
+      expect(abertas, ['Aula de calculo']);
+    });
   });
 }

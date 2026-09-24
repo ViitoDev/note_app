@@ -9,15 +9,21 @@ import 'package:markdown/markdown.dart' as md;
 import '../models/blocos_da_nota.dart';
 import '../models/frontmatter_writer.dart';
 import '../models/markdown_tasks.dart';
+import '../models/nota_de_quadro.dart';
 import '../models/note.dart';
 import '../models/preview_markdown.dart';
+import '../models/quadro_da_nota.dart';
+import '../models/quadro_markdown.dart';
 import '../models/tabela_markdown.dart';
 import '../models/wikilink.dart';
 import 'app_theme.dart';
 import 'menu_do_texto.dart';
 import 'note_properties.dart';
+import 'quadro_no_texto.dart';
+import 'quadro_tela_cheia.dart';
 import 'realce_de_codigo.dart';
 import 'resizable_split.dart';
+import 'seta_ao_digitar.dart';
 import 'tabela_editavel.dart';
 import 'tamanho_da_tabela.dart';
 import 'wikilink_suggestions.dart';
@@ -459,11 +465,13 @@ class NoteEditorState extends State<NoteEditor> {
     );
   }
 
-  /// Tira a tabela da nota, junto com a linha em branco que sobraria embaixo.
+  /// Tira o bloco desenhado da nota — tabela ou quadro —, junto com a linha em
+  /// branco que sobraria embaixo dele.
   ///
-  /// Desenhada, ela nao pode mais ser apagada selecionando o texto dela: sem
-  /// esta saida, uma tabela inserida sem querer ficaria na nota para sempre.
-  void _excluirTabela(BlocoDeTabela bloco) {
+  /// Desenhado, ele nao pode mais ser apagado selecionando o texto dele: sem
+  /// esta saida, uma tabela — ou um quadro — inserida sem querer ficaria na
+  /// nota para sempre.
+  void _excluirBloco(BlocoDaNota bloco) {
     final texto = _controller.text;
     var fim = bloco.fim;
     var quebras = 0;
@@ -847,38 +855,77 @@ class NoteEditorState extends State<NoteEditor> {
         const SingleActivator(LogicalKeyboardKey.keyS, control: true): save,
       },
       child: Focus(
-        autofocus: true,
+        // Numa nota-tela o foco e da area de desenho, que pede o dele sozinha.
+        // Dois `autofocus` no mesmo lugar disputariam o teclado, e quem
+        // perdesse a disputa seria justamente quem ia usa-lo.
+        autofocus: !_desenhada,
         onFocusChange: _foco,
-        child: Column(
-          children: [
-            _toolbar(theme, wide),
-            const Divider(height: 1),
-            Expanded(
-              // A ficha encabeça os dois paines. Duas copias do mesmo campo na
-              // tela nao se desencontram: nenhuma delas guarda estado — ambas
-              // leem o frontmatter do arquivo e escrevem por [_definirCampo],
-              // entao mexer numa aparece na outra no mesmo quadro.
-              child: switch (mode) {
-                EditorMode.editar => _comFicha(
-                  theme,
-                  (altura) => _corpoEditavel(theme, altura),
-                ),
-                EditorMode.visualizar => _preview(theme),
-                EditorMode.dividido => ResizableSplit(
-                  storageKey: 'editor',
-                  minFirst: 240,
-                  minSecond: 240,
-                  first: _comFicha(
-                    theme,
-                    (altura) => _corpoEditavel(theme, altura),
+        child: _desenhada
+            ? _comoTela(theme)
+            : Column(
+                children: [
+                  _toolbar(theme, wide),
+                  const Divider(height: 1),
+                  Expanded(
+                    // A ficha encabeça os dois paines. Duas copias do mesmo campo na
+                    // tela nao se desencontram: nenhuma delas guarda estado — ambas
+                    // leem o frontmatter do arquivo e escrevem por [_definirCampo],
+                    // entao mexer numa aparece na outra no mesmo quadro.
+                    child: switch (mode) {
+                      EditorMode.editar => _comFicha(
+                        theme,
+                        (altura) => _corpoEditavel(theme, altura),
+                      ),
+                      EditorMode.visualizar => _preview(theme),
+                      EditorMode.dividido => ResizableSplit(
+                        storageKey: 'editor',
+                        minFirst: 240,
+                        minSecond: 240,
+                        first: _comFicha(
+                          theme,
+                          (altura) => _corpoEditavel(theme, altura),
+                        ),
+                        second: _preview(theme),
+                      ),
+                    },
                   ),
-                  second: _preview(theme),
-                ),
-              },
-            ),
-          ],
-        ),
+                ],
+              ),
       ),
+    );
+  }
+
+  /// Se esta nota abre como tela, e nao como texto.
+  bool get _desenhada => NotaDeQuadro.desenhado(widget.note.name);
+
+  /// A nota desenhada, ocupando o editor inteiro.
+  ///
+  /// Sem a barra do editor por cima: os botoes dela — editar, visualizar,
+  /// dividir, inserir tabela — respondem a perguntas que uma tela nao faz, e a
+  /// tela ja traz a propria barra com o titulo da nota. Ctrl+S continua
+  /// gravando, e a gravaçao automatica tambem, porque o quadro sai daqui pelo
+  /// mesmo caminho por onde sai uma letra digitada: o texto da nota.
+  Widget _comoTela(ThemeData theme) {
+    final deFora = NotaDeQuadro.eDesenhoDeFora(widget.note.name);
+
+    return QuadroTelaCheia(
+      // Uma tela por nota. Sem isto, trocar de nota reaproveitaria o widget
+      // anterior — que guarda o desenho no proprio estado — e a nota nova
+      // abriria mostrando o desenho da nota velha.
+      key: ValueKey('tela-${widget.note.id}'),
+      quadro: deFora
+          ? NotaDeQuadro.doArquivo(widget.note)
+          : NotaDeQuadro.doCorpo(_controller.text),
+      titulo: NotaDeQuadro.tituloDe(widget.note.name),
+      emJanela: false,
+      somenteLeitura: deFora,
+      onAbrirNota: widget.onAbrirLink,
+      onMudar: (novo) {
+        // O quadro volta para dentro do texto da nota, e dali em diante ele e
+        // texto como qualquer outro: fica sujo, e gravado depois da pausa, e
+        // desfeito pelo mesmo caminho.
+        _controller.text = NotaDeQuadro.comQuadro(_controller.text, novo);
+      },
     );
   }
 
@@ -992,6 +1039,7 @@ class NoteEditorState extends State<NoteEditor> {
     final filhos = <Widget>[];
     var campos = 0;
     var tabelas = 0;
+    var quadros = 0;
 
     for (var i = 0; i < _blocos.length; i++) {
       final bloco = _blocos[i];
@@ -1018,6 +1066,8 @@ class NoteEditorState extends State<NoteEditor> {
           );
         case BlocoDeTabela():
           filhos.add(_grade(bloco, tabelas++));
+        case BlocoDeQuadro():
+          filhos.add(_cartaoDoQuadro(bloco, quadros++));
       }
     }
 
@@ -1052,6 +1102,7 @@ class NoteEditorState extends State<NoteEditor> {
       focusNode: trecho.foco,
       maxLines: null,
       keyboardType: TextInputType.multiline,
+      inputFormatters: const [SetaAoDigitar()],
       cursorColor: theme.colorScheme.primary,
       cursorWidth: 1.6,
       style: _estiloDoTexto(theme),
@@ -1069,6 +1120,14 @@ class NoteEditorState extends State<NoteEditor> {
             onPressed: () {
               campo.hideToolbar();
               unawaited(_inserirTabela());
+            },
+          ),
+          ItemDoMenu(
+            rotulo: 'Inserir quadro',
+            icone: Icons.account_tree_outlined,
+            onPressed: () {
+              campo.hideToolbar();
+              unawaited(_inserirQuadro());
             },
           ),
         ],
@@ -1117,9 +1176,75 @@ class NoteEditorState extends State<NoteEditor> {
         tabela: bloco.tabela,
         autofocus: bloco.inicio == _tabelaNova,
         onMudar: (nova) => _trocarBloco(bloco, nova.markdown),
-        onExcluir: () => _excluirTabela(bloco),
+        onExcluir: () => _excluirBloco(bloco),
       ),
     );
+  }
+
+  /// O cartao do quadro no painel de escrita.
+  ///
+  /// Pela ordem, e nao pela posiçao no texto, pelo mesmo motivo da grade:
+  /// escrever acima dele nao o desmonta e remonta a cada tecla.
+  Widget _cartaoDoQuadro(BlocoDeQuadro bloco, int ordem) {
+    return Padding(
+      padding: EdgeInsets.symmetric(horizontal: _recuo.left),
+      child: QuadroNoTexto(
+        key: ValueKey('quadro-$ordem'),
+        quadro: bloco.quadro,
+        onAbrir: () => unawaited(_abrirQuadro(ordem)),
+        onExcluir: () => _excluirBloco(bloco),
+      ),
+    );
+  }
+
+  /// Os quadros da nota, na ordem em que aparecem no texto.
+  List<BlocoDeQuadro> get _quadros =>
+      BlocosDaNota.de(_controller.text).whereType<BlocoDeQuadro>().toList();
+
+  /// Abre em tela cheia o quadro que faz [ordem] na nota.
+  ///
+  /// Pela ordem, e nao pelo bloco: a cada mexida no quadro o texto da nota
+  /// muda de tamanho, e um bloco guardado aqui apontaria para o lugar errado
+  /// na segunda mexida. A ordem, essa nao muda enquanto a tela esta aberta.
+  Future<void> _abrirQuadro(int ordem) async {
+    final quadros = _quadros;
+    if (ordem >= quadros.length) return;
+
+    await abrirQuadro(
+      context,
+      quadro: quadros[ordem].quadro,
+      titulo: widget.note.title,
+      onMudar: (novo) => _trocarQuadro(ordem, novo),
+    );
+  }
+
+  void _trocarQuadro(int ordem, QuadroDaNota novo) {
+    final quadros = _quadros;
+    if (ordem >= quadros.length) return;
+    _trocarBloco(quadros[ordem], novo.markdown);
+  }
+
+  /// Escreve um quadro vazio onde o cursor estava e o abre na hora.
+  ///
+  /// Abrir logo em seguida porque um quadro vazio nao tem nada para ver: quem
+  /// pediu um quadro quer desenhar, e o cartao vazio no meio da nota seria so
+  /// um passo a mais antes disso.
+  Future<void> _inserirQuadro() async {
+    final cursor = _controller.selection.baseOffset;
+    final texto = _controller.text;
+
+    final feito = QuadroMarkdown.inserir(
+      texto,
+      cursor < 0 ? texto.length : cursor,
+    );
+
+    _controller.value = TextEditingValue(
+      text: feito.texto,
+      selection: TextSelection.collapsed(offset: feito.inicio),
+    );
+
+    final ordem = _quadros.indexWhere((q) => q.inicio == feito.inicio);
+    if (ordem >= 0) await _abrirQuadro(ordem);
   }
 
   /// A lista de notas, colada embaixo do cursor.
@@ -1217,6 +1342,10 @@ class NoteEditorState extends State<NoteEditor> {
     final total = MarkdownTasks.contar(parsed.body);
     var proxima = 0;
 
+    // Mesma conta para os quadros: quem desenha recebe so o conteudo do bloco,
+    // e e a ordem que diz qual quadro do texto e aquele.
+    final totalDeQuadros = _quadros.length;
+
     return SingleChildScrollView(
       controller: _previewScroll,
       padding: const EdgeInsets.fromLTRB(
@@ -1270,9 +1399,20 @@ class NoteEditorState extends State<NoteEditor> {
                   final titulo = href == null ? null : Wikilink.tituloDe(href);
                   if (titulo != null) widget.onAbrirLink?.call(titulo);
                 },
-                // `gitHubWeb` traz o TaskListSyntax; sem ele as listas de
-                // tarefa (`- [ ]` / `- [x]`) viram texto solto.
-                extensionSet: md.ExtensionSet.gitHubWeb,
+                // Traz o TaskListSyntax — sem ele as listas de tarefa
+                // (`- [ ]` / `- [x]`) viram texto solto — e a cerca do quadro.
+                extensionSet: PreviewMarkdown.extensoes,
+                // O quadro nao e texto: o parser separa o bloco, e quem monta
+                // o desenho no lugar dele e este construtor.
+                builders: {
+                  QuadroDaNota.marcador: _QuadroDoPreview(
+                    total: totalDeQuadros,
+                    desenhar: (quadro, ordem) => QuadroNoTexto(
+                      quadro: quadro,
+                      onAbrir: () => unawaited(_abrirQuadro(ordem)),
+                    ),
+                  ),
+                },
                 checkboxBuilder: (checked) {
                   // O MarkdownBody pode se reconstruir sem passar por
                   // `_preview` de novo, e ai o contador continuaria de onde
@@ -1300,20 +1440,29 @@ class NoteEditorState extends State<NoteEditor> {
 
     // Titulo e negrito nao competem mais pelo mesmo azul.
     //
-    // Titulo vai do mais escuro (h1, o titulo da nota) ao mais claro (h6),
-    // a cor acompanhando o tamanho pra reforçar a mesma hierarquia. Negrito
-    // sai da escala de azul de proposito — e o que voce mesmo destacou no
-    // meio do texto corrido, nao a estrutura da nota, e precisa ser
+    // Cada nivel de titulo tem sua propria matiz (nao so uma variaçao de
+    // claridade do mesmo azul) porque duas matizes muito proximas — como
+    // h2 e h3 ficavam antes — sao dificeis de distinguir a olho quando
+    // aparecem perto uma da outra. O tamanho da fonte continua reforçando
+    // a hierarquia; a cor agora ajuda a diferenciar, nao so a ordenar.
+    // Negrito sai dessa paleta de proposito — e o que voce mesmo destacou
+    // no meio do texto corrido, nao a estrutura da nota, e precisa ser
     // reconhecido de longe mesmo num h6 do tamanho de um paragrafo.
-    const azulTituloEscuro = Color(0xFF2C6E96);
-    const azulTituloClaro = Color(0xFFA9E0F7);
-    const destaqueNegrito = Color(0xFFF2B84B);
-
-    Color tomDeTitulo(int nivel) =>
-        Color.lerp(azulTituloEscuro, azulTituloClaro, nivel / 5)!;
+    const toneDeTitulo = [
+      Color(0xFF4FA8E0), // h1 — azul
+      Color(0xFF63C29A), // h2 — verde-agua
+      Color(0xFFD8A657), // h3 — dourado
+      Color(0xFFCE7DE0), // h4 — lilas
+      Color(0xFFE0836F), // h5 — terracota
+      Color(0xFF8FB4E0), // h6 — azul acinzentado
+    ];
+    // Rosa: nao e nenhuma das matizes de titulo acima, pra nunca se
+    // confundir com o h3 dourado quando um negrito aparece perto de um
+    // titulo (era o caso antes, com F2B84B quase igual ao D8A657 do h3).
+    const destaqueNegrito = Color(0xFFE8659B);
 
     TextStyle? titulo(TextStyle? base, double tamanho, int nivel) => base
-        ?.copyWith(fontSize: tamanho, height: 1.4, color: tomDeTitulo(nivel));
+        ?.copyWith(fontSize: tamanho, height: 1.4, color: toneDeTitulo[nivel]);
 
     return MarkdownStyleSheet.fromTheme(theme).copyWith(
       h1: titulo(theme.textTheme.titleLarge, 26, 0)?.copyWith(height: 1.3),
@@ -1328,6 +1477,14 @@ class NoteEditorState extends State<NoteEditor> {
       strong: const TextStyle(
         fontWeight: FontWeight.w700,
         color: destaqueNegrito,
+      ),
+      // O italico sozinho e discreto demais para se notar numa leitura
+      // corrida — a inclinaçao da fonte do sistema e sutil. Uma cor mais
+      // apagada que o texto normal reforça o mesmo destaque que a citaçao ja
+      // usa, sem depender so do angulo da letra.
+      em: TextStyle(
+        fontStyle: FontStyle.italic,
+        color: scheme.onSurfaceVariant,
       ),
       h1Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
       h2Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
@@ -1383,6 +1540,46 @@ class NoteEditorState extends State<NoteEditor> {
   }
 }
 
+/// Monta o cartao do quadro no lugar do bloco ```quadro do preview.
+///
+/// O parser entrega so o conteudo do bloco, sem dizer qual dos quadros da nota
+/// e aquele — e a ordem de desenho que diz, do mesmo jeito que diz qual caixa
+/// de tarefa foi clicada. O resto da divisao realinha a contagem quando o
+/// preview se redesenha sem passar pelo editor de novo.
+class _QuadroDoPreview extends MarkdownElementBuilder {
+  _QuadroDoPreview({required this.desenhar, required this.total});
+
+  final Widget Function(QuadroDaNota quadro, int ordem) desenhar;
+  final int total;
+
+  int _proximo = 0;
+
+  @override
+  bool isBlockElement() => true;
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final quadro = QuadroDaNota.ler(element.textContent);
+
+    // Bloco estragado nao conta na ordem: ele tambem nao virou quadro do lado
+    // do editor, e contar aqui desalinharia todos os seguintes.
+    if (quadro == null) {
+      return Text(
+        'Nao foi possivel ler este quadro.',
+        style: TextStyle(color: Theme.of(context).colorScheme.error),
+      );
+    }
+
+    final ordem = total == 0 ? 0 : _proximo++ % total;
+    return desenhar(quadro, ordem);
+  }
+}
+
 /// Diz em que pe esta a gravaçao, no lugar do antigo botao "Salvar".
 ///
 /// O botao saiu porque nao ha mais nada para clicar: o texto e gravado sozinho
@@ -1404,7 +1601,7 @@ class _Estado extends StatelessWidget {
         ? ('Salvando', 'Gravando no arquivo')
         : pendente
         ? ('Nao salvo', 'Grava sozinho quando voce parar de escrever')
-        : ('Salvo', 'O arquivo esta em dia — e o Drive sobe sozinho');
+        : ('Salvo', 'O arquivo esta em dia — e sobe ao servidor em seguida');
 
     return Tooltip(
       message: dica,

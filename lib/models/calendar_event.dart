@@ -156,6 +156,14 @@ abstract final class EventParser {
     }
   }
 
+  /// Le um campo de data do frontmatter — `data:`, `criado_em:` — e devolve so
+  /// o dia.
+  ///
+  /// Publico porque `data:` nao e o unico campo de data que o app entende: o
+  /// diario do painel le `criado_em:` com as mesmas regras, e duplicar a
+  /// leitura faria os dois campos aceitarem formatos diferentes.
+  static DateTime? diaDoFrontmatter(dynamic value) => _parseDate(value);
+
   /// O YAML entrega `data:` ora como String, ora ja como DateTime — depende de
   /// o valor estar entre aspas no arquivo.
   static DateTime? _parseDate(dynamic value) {

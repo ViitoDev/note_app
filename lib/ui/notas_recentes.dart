@@ -19,7 +19,8 @@ class NotaRecente {
 ///
 /// Fica nas preferencias, e nao no vault: "quais notas **eu** abri por ultimo"
 /// e estado desta maquina, como o arranjo dos paineis — nao e conteudo da
-/// nota, e nao teria sentido o Drive levar isso para outro computador.
+/// nota, e nao teria sentido a sincronizacao levar isso para outro
+/// computador.
 abstract final class NotasRecentes {
   static const _chave = 'notas_recentes';
 

@@ -15,8 +15,9 @@ class Note {
     required this.body,
   });
 
-  /// Identidade no armazenamento. Localmente e o caminho; no Drive sera o
-  /// `fileId`, que sobrevive a renomeaçoes e movimentos.
+  /// Identidade no armazenamento: o caminho do arquivo no disco. O servidor
+  /// guarda a nota no mesmo caminho, relativo a raiz do vault, entao nao ha
+  /// uma segunda identidade a manter.
   final String id;
 
   /// Nome atual do arquivo, com extensao.
@@ -39,7 +40,7 @@ class Note {
   String? get tipo => frontmatter['tipo'] as String?;
 
   /// Delimitador `---` na primeira linha, conteudo YAML, `---` fechando.
-  /// Aceita tanto LF quanto CRLF porque o Drive replica os bytes sem
+  /// Aceita tanto LF quanto CRLF porque a sincronizacao replica os bytes sem
   /// normalizar quebra de linha, e o vault pode receber arquivos de fora.
   static final RegExp _frontmatterPattern = RegExp(
     r'^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)',

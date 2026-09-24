@@ -44,7 +44,7 @@ class DiaDeAtividade {
 /// o tamanho atual do vault — que nao e atividade nenhuma.
 ///
 /// Mora no proprio vault (`.notas-atividade.json`), como a ordem manual: assim
-/// viaja pelo Drive e sobrevive a reinstalar o app.
+/// viaja com as notas e sobrevive a reinstalar o app.
 @immutable
 class Atividade {
   const Atividade(this._dias);
@@ -56,7 +56,7 @@ class Atividade {
   static const vazia = Atividade({});
 
   /// Quanto tempo o historico guarda. O contador mostra um ano; guardar mais
-  /// so engordaria um arquivo que viaja pelo Drive a cada gravaçao.
+  /// so engordaria um arquivo que sobe ao servidor a cada gravaçao.
   static const _diasGuardados = 400;
 
   bool get isEmpty => _dias.isEmpty;

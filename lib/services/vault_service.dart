@@ -4,6 +4,8 @@ import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/atividade.dart';
+import '../models/excalidraw.dart';
+import '../models/nota_de_quadro.dart';
 import '../models/note.dart';
 import '../models/vault_entry.dart';
 import '../models/vault_order.dart';
@@ -11,11 +13,10 @@ import '../repositories/vault_repository.dart';
 
 /// Acesso ao vault: uma pasta comum de arquivos `.md` no disco.
 ///
-/// Nao ha camada de sync aqui de proposito. O vault vive dentro da pasta do
-/// Google Drive (`G:\My Drive\Notas`), entao gravar um arquivo ja e gravar na
-/// nuvem — quem sobe e o cliente do Drive, nao o app. Para o app, o vault e
-/// sempre so uma pasta local, e essa indiferenca e o que permite trocar a
-/// estrategia de sync sem tocar em codigo.
+/// Nao ha camada de sync aqui de proposito. Quem fala com o servidor privado e
+/// o `Sincronizador`, que le e escreve nesta mesma pasta depois. Para esta
+/// classe o vault e sempre so uma pasta local, e e essa indiferenca que faz o
+/// app inteiro continuar funcionando sem rede.
 class VaultService implements VaultRepository {
   static const _prefsKey = 'vault_path';
 
@@ -45,14 +46,17 @@ class VaultService implements VaultRepository {
     await prefs.setString(_prefsKey, path);
   }
 
-  /// Pasta sugerida ao abrir o seletor. A unidade do Google Drive vem primeiro
-  /// porque e onde o vault deve morar; a home do usuario e o fallback quando o
-  /// cliente do Drive nao esta montado.
+  /// Pasta sugerida ao abrir o seletor.
+  ///
+  /// Documentos primeiro, home depois. Nao ha mais unidade de nuvem a
+  /// adivinhar: o vault e uma pasta comum, e quem a replica e o servidor
+  /// privado, que nao monta nada no Explorer.
   @override
   String? get defaultStartPath {
-    const driveRoot = r'G:\My Drive';
-    if (Directory(driveRoot).existsSync()) return driveRoot;
-    return Platform.environment['USERPROFILE'];
+    final home = Platform.environment['USERPROFILE'];
+    if (home == null) return null;
+    final documentos = p.join(home, 'Documents');
+    return Directory(documentos).existsSync() ? documentos : home;
   }
 
   /// Le a arvore inteira do vault. Percorre recursivamente porque o vault
@@ -83,8 +87,14 @@ class VaultService implements VaultRepository {
 
       if (entity is Directory) {
         folders.add(await _scanDirectory(entity));
-      } else if (entity is File && p.extension(name).toLowerCase() == '.md') {
-        files.add(VaultFile(id: entity.path, name: name));
+      } else if (entity is File && _mostravel(name)) {
+        files.add(
+          VaultFile(
+            id: entity.path,
+            name: name,
+            modificadoEm: await _modificadoEm(entity),
+          ),
+        );
       }
     }
 
@@ -98,6 +108,22 @@ class VaultService implements VaultRepository {
       name: p.basename(dir.path),
       children: [...folders, ...files],
     );
+  }
+
+  /// Quando o arquivo foi gravado por ultimo.
+  ///
+  /// E um `stat` a mais por nota na varredura. Para um vault pessoal —
+  /// centenas de arquivos — custa milissegundos, e e a unica forma de saber
+  /// que uma nota mudou hoje sem manter um indice ao lado dela.
+  ///
+  /// Falha nao e erro: uma nota sem data de gravaçao so nao entra no diario
+  /// do painel.
+  static Future<DateTime?> _modificadoEm(File file) async {
+    try {
+      return (await file.stat()).modified;
+    } on FileSystemException {
+      return null;
+    }
   }
 
   @override
@@ -136,10 +162,21 @@ class VaultService implements VaultRepository {
     }
   }
 
+  /// Os arquivos que aparecem na arvore.
+  ///
+  /// As notas, e os desenhos do Excalidraw. Um `.excalidraw` nao e uma nota,
+  /// mas e um desenho que alguem guardou no vault de proposito, e esconde-lo da
+  /// arvore seria fingir que ele nao esta la. Ele abre so para olhar — ver
+  /// [NotaDeQuadro.eDesenhoDeFora].
+  static bool _mostravel(String nome) {
+    final extensao = p.extension(nome).toLowerCase();
+    return extensao == '.md' || extensao == Excalidraw.extensao;
+  }
+
   /// Cria uma subpasta e devolve o caminho dela.
   ///
-  /// Como o vault vive dentro do Google Drive, a pasta nova sobe para a nuvem
-  /// sozinha — nao ha nada a sincronizar aqui.
+  /// A pasta so nasce no disco. Leva-la ao servidor e trabalho da proxima
+  /// sincronizacao, nao desta chamada.
   @override
   Future<String> createFolder(String parentId, String name) async {
     var slug = _sanitizeName(name, fallback: 'Nova pasta');
@@ -157,27 +194,38 @@ class VaultService implements VaultRepository {
 
   /// Cria uma nota vazia com frontmatter minimo e devolve o caminho dela.
   /// Se o nome ja existir, acrescenta um sufixo numerico em vez de sobrescrever.
+  ///
+  /// [tela] cria uma nota-tela — um `.quadro.md`, que abre como area de desenho
+  /// em vez de como texto. E a mesma chamada, e nao uma segunda, porque e a
+  /// mesma coisa: um arquivo do vault, com frontmatter e um corpo. O que muda e
+  /// o que vai escrito no corpo, e o sufixo que diz isso na hora de abrir.
   @override
-  Future<String> createNote(String folderId, String title) async {
+  Future<String> createNote(
+    String folderId,
+    String title, {
+    bool tela = false,
+  }) async {
     final safeTitle = title.trim().isEmpty ? 'Sem titulo' : title.trim();
     final slug = _sanitizeName(safeTitle, fallback: 'Sem titulo');
+    final extensao = tela ? NotaDeQuadro.sufixo : '.md';
 
-    var target = p.join(folderId, '$slug.md');
+    var target = p.join(folderId, '$slug$extensao');
     var counter = 2;
     while (File(target).existsSync()) {
-      target = p.join(folderId, '$slug $counter.md');
+      target = p.join(folderId, '$slug $counter$extensao');
       counter++;
     }
 
     final today = DateTime.now();
     final data = '${today.year}-${_two(today.month)}-${_two(today.day)}';
-    final content =
-        '---\n'
-        'tipo: nota\n'
-        'criado_em: $data\n'
-        'tags: []\n'
-        '---\n\n'
-        '# $safeTitle\n\n';
+    final content = tela
+        ? NotaDeQuadro.nova(safeTitle, data)
+        : '---\n'
+              'tipo: nota\n'
+              'criado_em: $data\n'
+              'tags: []\n'
+              '---\n\n'
+              '# $safeTitle\n\n';
 
     await File(target).writeAsString(content, flush: true);
     return target;
@@ -286,8 +334,8 @@ class VaultService implements VaultRepository {
 
   /// Nome do arquivo que guarda a ordem manual, dentro do proprio vault.
   ///
-  /// Fica no vault, e nao nas preferencias do app, para a ordem viajar pelo
-  /// Drive junto com as notas. O ponto no inicio faz a varredura pular ele,
+  /// Fica no vault, e nao nas preferencias do app, para a ordem viajar junto
+  /// com as notas. O ponto no inicio faz a varredura pular ele,
   /// entao ele nunca aparece na arvore.
   static const _arquivoDeOrdem = '.notas-ordem.json';
 
@@ -319,8 +367,8 @@ class VaultService implements VaultRepository {
     }
   }
 
-  /// Historico de escrita, no vault pelo mesmo motivo da ordem: viaja pelo
-  /// Drive e sobrevive a reinstalar o app. Fora daqui ele nao existiria em
+  /// Historico de escrita, no vault pelo mesmo motivo da ordem: viaja com as
+  /// notas e sobrevive a reinstalar o app. Fora daqui ele nao existiria em
   /// lugar nenhum — nenhum `.md` guarda quanto foi escrito ontem.
   static const _arquivoDeAtividade = '.notas-atividade.json';
 

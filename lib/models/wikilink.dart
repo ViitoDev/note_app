@@ -39,6 +39,28 @@ abstract final class Wikilink {
     });
   }
 
+  /// O alvo de um texto que e *so* um `[[link]]`, e o que esse link mostra.
+  ///
+  /// Nasceu para o quadro. Uma caixa cujo texto inteiro e um wikilink nao e uma
+  /// caixa com um link dentro: e um atalho para aquela nota, e o quadro desenha
+  /// isso de outro jeito — e abre a nota quando se clica duas vezes nela.
+  ///
+  /// Assim, e nao com um campo proprio na caixa: o `.md` ja tem um jeito de
+  /// apontar para uma nota, o grafo ja sabe ler aquele jeito, e um segundo
+  /// campo dizendo a mesma coisa seria uma segunda verdade para manter em dia.
+  static ({String alvo, String texto})? sozinho(String texto) {
+    final achado = _sozinho.firstMatch(texto.trim());
+    if (achado == null) return null;
+
+    final alvo = achado.group(1)!.trim();
+    if (alvo.isEmpty) return null;
+
+    final rotulo = (achado.group(2) ?? '').trim();
+    return (alvo: alvo, texto: rotulo.isEmpty ? alvo : rotulo);
+  }
+
+  static final _sozinho = RegExp(r'^\[\[([^\]\|\n]+)(?:\|([^\]\n]*))?\]\]$');
+
   /// O titulo da nota apontada por [href], ou nulo se o link nao for interno.
   static String? tituloDe(String href) {
     if (!href.startsWith('$esquema:')) return null;

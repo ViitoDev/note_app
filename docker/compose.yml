@@ -1,0 +1,58 @@
+# Servidor do vault: um WebDAV que guarda os `.md` e nada mais.
+#
+# WebDAV em vez de uma API propria porque os ids do vault ja sao caminhos
+# (`pastas/aula.md`), entao o mapeamento e direto — e porque a mesma pasta abre
+# no Obsidian, no Explorer do Windows e em qualquer cliente de celular sem
+# precisar de codigo nosso. Se um dia este app sumir, as notas continuam la.
+#
+# Subir:   docker compose --env-file .env up -d
+# Derrubar: docker compose down
+name: notas
+
+services:
+  vault:
+    image: sigoden/dufs:v0.46.0
+    container_name: notas-vault
+    restart: unless-stopped
+
+    # `--allow-all` libera upload, exclusao e busca; quem fecha a porta e a
+    # regra de autenticacao logo abaixo, nao a ausencia de permissoes.
+    # `@/:rw` da leitura e escrita so ao usuario declarado: sem ela, o dufs
+    # aceitaria visitante anonimo.
+    command:
+      - /dados
+      - --allow-all
+      - --auth
+      - ${NOTAS_USUARIO}:${NOTAS_SENHA}@/:rw
+
+    # Sem endereco antes da porta, de proposito.
+    #
+    # E a unica forma de atender IPv4 e IPv6 ao mesmo tempo: o `docker-proxy`
+    # marca o socket como v6-only, entao fixar `[::]` publica so em IPv6 e
+    # fixar `0.0.0.0` publica so em IPv4 — um nao responde pelo outro. Omitindo
+    # o endereco, o Docker cria as duas ligacoes.
+    #
+    # Para prender numa interface so, troque a linha pelo endereco dela:
+    #   - "192.168.15.158:${NOTAS_PORTA:-5005}:5000"       # so IPv4
+    #   - "[2804:7f0:90c1:f098::1]:${NOTAS_PORTA:-5005}:5000"  # so IPv6
+    ports:
+      - "${NOTAS_PORTA:-5005}:5000"
+
+    # Bind mount, e nao volume nomeado, de proposito: as notas precisam ser
+    # arquivos comuns numa pasta que voce enxerga, faz backup e abre com outro
+    # editor. Um volume gerenciado esconderia isso dentro do Docker.
+    volumes:
+      - ${NOTAS_DADOS:-./dados}:/dados
+
+    # Sem isso os `.md` nascem do root e voce nao consegue nem fazer backup
+    # deles sem sudo.
+    user: "${NOTAS_UID:-1000}:${NOTAS_GID:-1000}"
+
+    # O dufs nao registra usuario nem senha, mas registra cada caminho pedido.
+    # Limitar o log evita que o nome de toda nota sua fique guardado para
+    # sempre no disco do servidor.
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

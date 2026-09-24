@@ -96,3 +96,7 @@ service-account*.json
 
 # Web
 /web/.dart_tool/
+
+# Docker do servidor do vault: senhas e as proprias notas.
+/docker/.env
+/docker/dados/

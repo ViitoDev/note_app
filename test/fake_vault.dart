@@ -1,4 +1,5 @@
 import 'package:notas_app/models/atividade.dart';
+import 'package:notas_app/models/nota_de_quadro.dart';
 import 'package:notas_app/models/note.dart';
 import 'package:notas_app/models/vault_entry.dart';
 import 'package:notas_app/models/vault_order.dart';
@@ -48,8 +49,11 @@ class FakeVault implements VaultRepository {
   Future<void> writeNote(String noteId, String content) async {}
 
   @override
-  Future<String> createNote(String folderId, String title) async =>
-      p.join(folderId, '$title.md');
+  Future<String> createNote(
+    String folderId,
+    String title, {
+    bool tela = false,
+  }) async => p.join(folderId, '$title${tela ? NotaDeQuadro.sufixo : '.md'}');
 
   @override
   Future<String> createFolder(String parentId, String name) async =>

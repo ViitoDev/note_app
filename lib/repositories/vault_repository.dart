@@ -5,9 +5,9 @@ import '../models/vault_order.dart';
 
 /// Contrato de acesso ao vault usado pela interface.
 ///
-/// A implementacao e local: o vault e uma pasta dentro do Google Drive, e a
-/// sincronizacao com a nuvem fica por conta do cliente do Drive. Manter este
-/// contrato permite trocar a origem dos dados sem acoplar a UI.
+/// A implementacao e local: o vault e uma pasta de arquivos no disco, e a
+/// replicacao para o servidor privado acontece depois, fora deste contrato.
+/// Manter a interface aqui permite trocar a origem dos dados sem acoplar a UI.
 abstract interface class VaultRepository {
   Future<String?> loadSavedVaultPath();
 
@@ -21,7 +21,8 @@ abstract interface class VaultRepository {
 
   Future<void> writeNote(String noteId, String content);
 
-  Future<String> createNote(String folderId, String title);
+  /// Cria uma nota. Com [tela], cria uma nota-tela — ver [NotaDeQuadro].
+  Future<String> createNote(String folderId, String title, {bool tela});
 
   Future<String> createFolder(String parentId, String name);
 

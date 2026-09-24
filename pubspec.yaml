@@ -60,11 +60,13 @@ dependencies:
   shared_preferences: ^2.5.5
 
 
-  # Cliente oficial gerado para a Google Drive API v3. A autenticaçao fornece
-  # um http.Client autorizado, injetado na camada de Drive.
-  googleapis: ^16.0.0
-  _discoveryapis_commons: ^1.0.7
+  # Conversa com o servidor privado (WebDAV) e o fluxo OAuth do Gmail.
   http: ^1.6.0
+
+  # Leitura do XML do PROPFIND. O `<D:multistatus>` do WebDAV muda de prefixo
+  # de namespace conforme o servidor, e adivinhar isso com expressao regular e
+  # o caminho conhecido para um bug que so aparece na maquina do outro.
+  xml: ^6.5.0
   enough_mail: ^2.1.7
   win32: ^6.4.0
   ffi: ^2.2.0

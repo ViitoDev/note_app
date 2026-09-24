@@ -568,8 +568,11 @@ class _FileTile extends StatelessWidget {
             // começaria antes do nome das pastas irmas, e a coluna de nomes —
             // que e por onde o olho desce — sairia serrilhada.
             const SizedBox(width: 18),
+            // A nota-tela tem o proprio icone: na arvore, "mapa" e "aula" sao
+            // duas linhas iguais, e so ao abrir e que se descobria que uma
+            // delas era uma area de desenho.
             Icon(
-              Icons.description_outlined,
+              file.desenhada ? Icons.gesture : Icons.description_outlined,
               size: 14,
               color: selected ? scheme.primary : scheme.onSurfaceVariant,
             ),
