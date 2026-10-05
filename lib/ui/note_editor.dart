@@ -3,32 +3,26 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
-import 'package:markdown/markdown.dart' as md;
 
 import '../models/blocos_da_nota.dart';
 import '../models/frontmatter_writer.dart';
-import '../models/markdown_tasks.dart';
 import '../models/nota_de_quadro.dart';
 import '../models/note.dart';
-import '../models/preview_markdown.dart';
 import '../models/quadro_da_nota.dart';
 import '../models/quadro_markdown.dart';
 import '../models/tabela_markdown.dart';
-import '../models/wikilink.dart';
+import '../models/bloco_no_texto.dart';
 import 'app_theme.dart';
+import 'codigo_editavel.dart';
+import 'markdown_ao_vivo.dart';
 import 'menu_do_texto.dart';
 import 'note_properties.dart';
 import 'quadro_no_texto.dart';
 import 'quadro_tela_cheia.dart';
-import 'realce_de_codigo.dart';
-import 'resizable_split.dart';
 import 'seta_ao_digitar.dart';
 import 'tabela_editavel.dart';
 import 'tamanho_da_tabela.dart';
 import 'wikilink_suggestions.dart';
-
-enum EditorMode { editar, visualizar, dividido }
 
 /// Um campo de texto do editor, ligado a um trecho do corpo da nota.
 ///
@@ -38,7 +32,7 @@ enum EditorMode { editar, visualizar, dividido }
 class _TrechoEditavel {
   _TrechoEditavel({required this.campo, required this.foco});
 
-  final TextEditingController campo;
+  final MarkdownAoVivo campo;
   final FocusNode foco;
 
   /// Onde o trecho começa e termina no corpo. Anda a cada mexida no texto.
@@ -51,43 +45,12 @@ class _TrechoEditavel {
   }
 }
 
-/// Caixa de tarefa clicavel do preview.
-class _CaixaDeTarefa extends StatelessWidget {
-  const _CaixaDeTarefa({required this.marcada, required this.onTap});
-
-  final bool marcada;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: onTap,
-        behavior: HitTestBehavior.opaque,
-        child: Padding(
-          // Area de toque maior que o icone: 17px de alvo e pouco para o
-          // ponteiro, e a folga cabe entre a caixa e o texto.
-          padding: const EdgeInsets.only(right: 6, top: 1, bottom: 1, left: 1),
-          child: Icon(
-            marcada
-                ? Icons.check_box_rounded
-                : Icons.check_box_outline_blank_rounded,
-            size: 17,
-            color: marcada ? scheme.primary : scheme.onSurfaceVariant,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Editor de uma nota: Markdown cru de um lado, preview renderizado do outro.
+/// Editor de uma nota: uma tela so, em que se escreve direto no texto ja
+/// desenhado.
 ///
-/// O texto editado e o arquivo inteiro, frontmatter incluso — nada e escondido
-/// do usuario, coerente com "o `.md` e a fonte da verdade".
+/// Titulos, negrito, links e tarefas saem formatados no proprio campo (veja
+/// [MarkdownAoVivo]), e o que vai para o arquivo continua sendo o Markdown cru
+/// — coerente com "o `.md` e a fonte da verdade".
 class NoteEditor extends StatefulWidget {
   const NoteEditor({
     super.key,
@@ -103,7 +66,7 @@ class NoteEditor extends StatefulWidget {
   final Future<void> Function(String) onSave;
   final ValueChanged<bool> onDirtyChanged;
 
-  /// Chamado ao clicar num `[[link]]` do preview, com o titulo da nota alvo.
+  /// Chamado ao clicar num `[[link]]` da nota, com o titulo da nota alvo.
   ///
   /// Quem resolve o titulo e quem tem o vault na mao; o editor so avisa que o
   /// link foi tocado. Sem isto o link continua aparecendo, mas nao leva a
@@ -146,11 +109,10 @@ class NoteEditorState extends State<NoteEditor> {
   /// Ultimo conteudo gravado, ja como o arquivo inteiro.
   late String _savedText;
 
-  /// Os dois lados rolam por conta propria, mas voltam juntos ao topo quando a
-  /// nota muda — este widget e reaproveitado entre notas, e sem os
-  /// controladores a rolagem da nota anterior ficaria valendo para a nova.
+  /// Volta ao topo quando a nota muda — este widget e reaproveitado entre
+  /// notas, e sem o controlador a rolagem da nota anterior ficaria valendo
+  /// para a nova.
   final _editorScroll = ScrollController();
-  final _previewScroll = ScrollController();
 
   /// O corpo dividido em blocos: texto cru e tabelas.
   List<BlocoDaNota> _blocos = const [];
@@ -166,12 +128,14 @@ class NoteEditorState extends State<NoteEditor> {
   /// primeira celula dela. Nulo em qualquer outro momento.
   int? _tabelaNova;
 
+  /// Idem, para o balao de codigo que acabou de ser aberto.
+  int? _codigoNovo;
+
   /// O `[[` que esta sendo escrito agora, se houver.
   WikilinkAberto? _link;
   List<String> _sugestoes = const [];
   int _sugestaoMarcada = 0;
 
-  EditorMode _mode = EditorMode.dividido;
   bool _dirty = false;
   bool _saving = false;
 
@@ -192,47 +156,6 @@ class NoteEditorState extends State<NoteEditor> {
     _controller = TextEditingController(text: _separar(widget.note.raw))
       ..addListener(_onTextChanged);
     _ajustarTrechos();
-    // Os dois lados mostram a mesma nota: rolar um sem o outro obriga a
-    // procurar de novo, do outro lado, o trecho que se estava lendo.
-    _editorScroll.addListener(_editorRolou);
-    _previewScroll.addListener(_previewRolou);
-  }
-
-  void _editorRolou() => _acompanhar(_editorScroll, _previewScroll);
-  void _previewRolou() => _acompanhar(_previewScroll, _editorScroll);
-
-  /// Verdadeiro enquanto um lado esta sendo movido pelo outro.
-  ///
-  /// Sem esta trava os dois se empurrariam em circulo, porque mexer num deles
-  /// dispara o aviso que move o outro.
-  bool _acompanhando = false;
-
-  /// Leva [destino] a mesma altura relativa de [origem].
-  ///
-  /// A conta e por proporçao, e nao por linha: os dois lados desenham a mesma
-  /// nota com alturas diferentes — um titulo ocupa tres vezes mais espaço
-  /// renderizado do que em texto cru — e casar linha a linha exigiria medir
-  /// cada bloco dos dois lados. A proporçao acerta o trecho; o olho faz o
-  /// resto.
-  void _acompanhar(ScrollController origem, ScrollController destino) {
-    if (_acompanhando) return;
-    if (!origem.hasClients || !destino.hasClients) return;
-
-    final limiteDaOrigem = origem.position.maxScrollExtent;
-    final limiteDoDestino = destino.position.maxScrollExtent;
-    if (limiteDaOrigem <= 0 || limiteDoDestino <= 0) return;
-
-    final alvo = (origem.offset / limiteDaOrigem * limiteDoDestino).clamp(
-      0.0,
-      limiteDoDestino,
-    );
-    // Um pixel de folga: sem ela, o arredondamento de um lado devolveria o
-    // movimento para o outro sem parar.
-    if ((destino.offset - alvo).abs() < 1) return;
-
-    _acompanhando = true;
-    destino.jumpTo(alvo);
-    _acompanhando = false;
   }
 
   @override
@@ -245,6 +168,7 @@ class NoteEditorState extends State<NoteEditor> {
       _agendada?.cancel();
       _savedText = widget.note.raw;
       _tabelaNova = null;
+      _codigoNovo = null;
       _controller.text = _separar(widget.note.raw);
       _setDirty(false);
       _voltarAoTopo();
@@ -271,16 +195,14 @@ class NoteEditorState extends State<NoteEditor> {
   /// O arquivo inteiro: o que fica no disco e o que o preview le.
   String get _arquivo => _cabecalho + _controller.text;
 
-  /// Leva os dois paines de volta ao inicio da nota.
+  /// Leva o painel de volta ao inicio da nota.
   ///
   /// Depois do quadro: o conteudo novo acabou de entrar, e um `jumpTo` antes
   /// de ele ser medido cairia num limite de rolagem que ainda e o da nota
   /// anterior.
   void _voltarAoTopo() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      for (final scroll in [_editorScroll, _previewScroll]) {
-        if (scroll.hasClients) scroll.jumpTo(0);
-      }
+      if (_editorScroll.hasClients) _editorScroll.jumpTo(0);
     });
   }
 
@@ -293,31 +215,49 @@ class NoteEditorState extends State<NoteEditor> {
     for (final trecho in _trechos) {
       trecho.soltar();
     }
-    _editorScroll
-      ..removeListener(_editorRolou)
-      ..dispose();
-    _previewScroll
-      ..removeListener(_previewRolou)
-      ..dispose();
+    _editorScroll.dispose();
     super.dispose();
   }
 
-  /// Marca ou desmarca a tarefa que foi clicada no preview e grava.
+  /// O clique no texto: marca a tarefa ou abre o link que estava debaixo dele.
   ///
-  /// O preview nao guarda estado de tarefa: ele reescreve o `- [ ]` no texto e
-  /// passa a mostrar o que o texto diz. Sem isso haveria duas verdades sobre a
-  /// mesma caixa — a do arquivo e a da tela.
-  void _alternarTarefa(int indice) {
-    // A contagem e sempre do corpo, que e justamente o que o editor segura: o
-    // frontmatter nao vira caixa no preview, e uma linha dele na conta
-    // desalinharia todos os indices.
-    final texto = _controller.text;
-    final novo = MarkdownTasks.alternar(texto, indice);
-    if (novo == texto) return;
+  /// A caixa responde a qualquer clique, porque nao ha o que editar dentro
+  /// dela. O link so abre quando saiu desenhado — numa linha que nao era a do
+  /// cursor — ou com Ctrl: na linha que se escreve, clicar nele e para mexer
+  /// no texto do link, e abrir a outra nota tiraria o usuario dali.
+  void _tocou(_TrechoEditavel trecho) {
+    final campo = trecho.campo;
+    final selecao = campo.selection;
+    if (!selecao.isValid || !selecao.isCollapsed) return;
+    final onde = selecao.baseOffset;
 
-    // `[ ]` e `[x]` tem o mesmo tamanho, entao a posiçao do cursor no editor
-    // continua valendo; trocar o texto inteiro jogaria o cursor para o começo.
-    _controller.value = _controller.value.copyWith(text: novo);
+    final caixa = campo.caixaEm(onde);
+    if (caixa != null) {
+      _alternarTarefa(trecho.inicio + caixa);
+      return;
+    }
+
+    final link = campo.linkEm(onde);
+    if (link == null) return;
+    if (campo.estavaDesenhada(onde) ||
+        HardwareKeyboard.instance.isControlPressed) {
+      widget.onAbrirLink?.call(link);
+    }
+  }
+
+  /// Marca ou desmarca a tarefa cuja caixa tem [posicao] no corpo, e grava.
+  ///
+  /// Nao ha estado de tarefa fora do texto: o clique reescreve o `[ ]` e a tela
+  /// passa a mostrar o que o texto diz.
+  void _alternarTarefa(int posicao) {
+    final texto = _controller.text;
+    final marca = texto[posicao] == ' ' ? 'x' : ' ';
+
+    // `[ ]` e `[x]` tem o mesmo tamanho, entao a posiçao do cursor continua
+    // valendo; trocar o texto inteiro jogaria o cursor para o começo.
+    _controller.value = _controller.value.copyWith(
+      text: texto.replaceRange(posicao, posicao + 1, marca),
+    );
     unawaited(save());
   }
 
@@ -380,18 +320,27 @@ class NoteEditorState extends State<NoteEditor> {
 
     while (_trechos.length < textos.length) {
       final trecho = _TrechoEditavel(
-        campo: TextEditingController(),
+        campo: MarkdownAoVivo(),
         // O foco e proprio de cada campo para que as setas e o Enter cheguem
         // ao editor antes de virarem movimento de cursor e quebra de linha.
         foco: FocusNode(onKeyEvent: _teclasDoEditor),
       );
-      trecho.campo.addListener(() => _trechoMudou(trecho));
+      trecho.campo
+        ..comFoco = (() => trecho.foco.hasFocus)
+        ..addListener(() => _trechoMudou(trecho));
       // Ganhar o foco tambem conta: o campo pode receber o cursor exatamente
       // onde ele ja estava — clicando no começo de um campo intocado, por
       // exemplo — e ai nao ha mudança nenhuma para o controlador avisar. Sem
       // isto o corpo ficaria sem saber onde esta o cursor.
+      //
+      // Perder o foco tambem redesenha: e quando a linha que se escrevia
+      // esconde os marcadores de novo.
       trecho.foco.addListener(() {
-        if (trecho.foco.hasFocus) _trechoMudou(trecho);
+        if (trecho.foco.hasFocus) {
+          _trechoMudou(trecho);
+        } else if (mounted) {
+          setState(() {});
+        }
       });
       _trechos.add(trecho);
     }
@@ -465,7 +414,7 @@ class NoteEditorState extends State<NoteEditor> {
     );
   }
 
-  /// Tira o bloco desenhado da nota — tabela ou quadro —, junto com a linha em
+  /// Tira o bloco desenhado da nota — tabela, quadro ou codigo —, junto com a linha em
   /// branco que sobraria embaixo dele.
   ///
   /// Desenhado, ele nao pode mais ser apagado selecionando o texto dele: sem
@@ -537,6 +486,8 @@ class NoteEditorState extends State<NoteEditor> {
       // Fora da lista de sugestoes, as duas teclas que a lista de itens usa.
       if (tecla == LogicalKeyboardKey.enter ||
           tecla == LogicalKeyboardKey.numpadEnter) {
+        final codigo = _abrirCodigo();
+        if (codigo == KeyEventResult.handled) return codigo;
         return _continuarLista();
       }
       if (tecla == LogicalKeyboardKey.backspace) return _apagarMarcador();
@@ -589,6 +540,60 @@ class NoteEditorState extends State<NoteEditor> {
 
     final inicio = _controller.text.lastIndexOf('\n', cursor - 1) + 1;
     return (inicio: inicio, texto: _controller.text.substring(inicio, cursor));
+  }
+
+  /// A cerca que abre um bloco de codigo, sozinha na linha: ```` ```python ````.
+  static final _cercaAberta = RegExp(
+    r'^ {0,3}(`{3,}|~{3,})[ \t]*[^\s`]*[ \t]*$',
+  );
+
+  /// Enter no fim de ```` ```python ```` fecha o bloco e abre o balao.
+  ///
+  /// Sem isto o bloco ficaria como texto ate alguem escrever a cerca de baixo
+  /// — e ate la, o resto da nota inteira seria lido como codigo.
+  KeyEventResult _abrirCodigo() {
+    final linha = _linhaAteOCursor();
+    if (linha == null) return KeyEventResult.ignored;
+
+    final texto = _controller.text;
+    final cursor = _controller.selection.baseOffset;
+    // So no fim da linha: Enter no meio de ```py quebra a linha como sempre.
+    if (cursor < texto.length && texto[cursor] != '\n') {
+      return KeyEventResult.ignored;
+    }
+
+    final cerca = _cercaAberta.firstMatch(linha.texto);
+    if (cerca == null) return KeyEventResult.ignored;
+
+    // Uma cerca com numero impar de cercas antes dela esta fechando um bloco
+    // que ficou aberto, e nao abrindo outro.
+    final antes = texto.substring(0, linha.inicio).split('\n');
+    final abertas = antes.where((l) => RegExp(r'^\s*(```|~~~)').hasMatch(l));
+    if (abertas.length.isOdd) return KeyEventResult.ignored;
+
+    final fechamento = '\n${cerca.group(1)}';
+    _codigoNovo = linha.inicio;
+    _controller.value = TextEditingValue(
+      text: texto.replaceRange(cursor, cursor, fechamento),
+      selection: TextSelection.collapsed(offset: linha.inicio),
+    );
+    return KeyEventResult.handled;
+  }
+
+  /// Escreve um balao de codigo vazio onde o cursor estava.
+  void _inserirCodigo() {
+    final cursor = _controller.selection.baseOffset;
+    final texto = _controller.text;
+    final feito = BlocoNoTexto.inserir(
+      texto,
+      cursor < 0 ? texto.length : cursor,
+      '```\n```',
+    );
+    _codigoNovo = feito.inicio;
+    _controller.value = TextEditingValue(
+      text: feito.texto,
+      selection: TextSelection.collapsed(offset: feito.inicio),
+    );
   }
 
   /// Enter dentro de uma lista abre a linha seguinte com o mesmo marcador.
@@ -845,10 +850,6 @@ class NoteEditorState extends State<NoteEditor> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final wide = MediaQuery.sizeOf(context).width >= 900;
-    final mode = (!wide && _mode == EditorMode.dividido)
-        ? EditorMode.editar
-        : _mode;
 
     return CallbackShortcuts(
       bindings: {
@@ -864,30 +865,13 @@ class NoteEditorState extends State<NoteEditor> {
             ? _comoTela(theme)
             : Column(
                 children: [
-                  _toolbar(theme, wide),
+                  _toolbar(theme),
                   const Divider(height: 1),
                   Expanded(
-                    // A ficha encabeça os dois paines. Duas copias do mesmo campo na
-                    // tela nao se desencontram: nenhuma delas guarda estado — ambas
-                    // leem o frontmatter do arquivo e escrevem por [_definirCampo],
-                    // entao mexer numa aparece na outra no mesmo quadro.
-                    child: switch (mode) {
-                      EditorMode.editar => _comFicha(
-                        theme,
-                        (altura) => _corpoEditavel(theme, altura),
-                      ),
-                      EditorMode.visualizar => _preview(theme),
-                      EditorMode.dividido => ResizableSplit(
-                        storageKey: 'editor',
-                        minFirst: 240,
-                        minSecond: 240,
-                        first: _comFicha(
-                          theme,
-                          (altura) => _corpoEditavel(theme, altura),
-                        ),
-                        second: _preview(theme),
-                      ),
-                    },
+                    child: _comFicha(
+                      theme,
+                      (altura) => _corpoEditavel(theme, altura),
+                    ),
                   ),
                 ],
               ),
@@ -900,9 +884,8 @@ class NoteEditorState extends State<NoteEditor> {
 
   /// A nota desenhada, ocupando o editor inteiro.
   ///
-  /// Sem a barra do editor por cima: os botoes dela — editar, visualizar,
-  /// dividir, inserir tabela — respondem a perguntas que uma tela nao faz, e a
-  /// tela ja traz a propria barra com o titulo da nota. Ctrl+S continua
+  /// Sem a barra do editor por cima: a tela ja traz a propria, com o titulo
+  /// da nota. Ctrl+S continua
   /// gravando, e a gravaçao automatica tambem, porque o quadro sai daqui pelo
   /// mesmo caminho por onde sai uma letra digitada: o texto da nota.
   Widget _comoTela(ThemeData theme) {
@@ -929,7 +912,7 @@ class NoteEditorState extends State<NoteEditor> {
     );
   }
 
-  Widget _toolbar(ThemeData theme, bool wide) {
+  Widget _toolbar(ThemeData theme) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(
         AppTheme.gapXl,
@@ -939,61 +922,19 @@ class NoteEditorState extends State<NoteEditor> {
       ),
       child: Row(
         children: [
-          Expanded(
-            child: Row(
-              children: [
-                Flexible(
-                  child: Text(
-                    widget.note.title,
-                    style: theme.textTheme.titleMedium,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                const SizedBox(width: AppTheme.gapMd),
-                _Estado(salvando: _saving, pendente: _dirty),
-              ],
+          Flexible(
+            child: Text(
+              widget.note.title,
+              style: theme.textTheme.titleMedium,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
-          SegmentedButton<EditorMode>(
-            showSelectedIcon: false,
-            segments: [
-              const ButtonSegment(
-                value: EditorMode.editar,
-                icon: Icon(Icons.edit_outlined, size: 17),
-                tooltip: 'Editar',
-              ),
-              const ButtonSegment(
-                value: EditorMode.visualizar,
-                icon: Icon(Icons.visibility_outlined, size: 17),
-                tooltip: 'Visualizar',
-              ),
-              if (wide)
-                const ButtonSegment(
-                  value: EditorMode.dividido,
-                  icon: Icon(Icons.vertical_split_outlined, size: 17),
-                  tooltip: 'Dividido',
-                ),
-            ],
-            selected: {
-              (!wide && _mode == EditorMode.dividido)
-                  ? EditorMode.editar
-                  : _mode,
-            },
-            onSelectionChanged: (s) => setState(() => _mode = s.first),
-          ),
+          const SizedBox(width: AppTheme.gapMd),
+          _Estado(salvando: _saving, pendente: _dirty),
         ],
       ),
     );
   }
-
-  /// Fonte dos trechos de codigo do preview — o `code` de dentro da linha e os
-  /// blocos ```. O realce so troca as cores por cima dela.
-  static const _fonteDeCodigo = TextStyle(
-    fontFamily: 'Consolas',
-    fontFamilyFallback: ['Cascadia Mono', 'monospace'],
-    fontSize: 12.5,
-    height: 1.6,
-  );
 
   /// Recuo do texto dentro do campo. A lista de sugestoes precisa dele para
   /// converter a posiçao do cursor no texto em posiçao na tela.
@@ -1004,30 +945,43 @@ class NoteEditorState extends State<NoteEditor> {
     AppTheme.gapXl,
   );
 
-  TextStyle _estiloDoTexto(ThemeData theme) => TextStyle(
-    fontFamily: 'Consolas',
-    fontFamilyFallback: const ['Cascadia Mono', 'monospace'],
-    fontSize: 13.5,
-    height: 1.7,
-    color: theme.colorScheme.onSurface.withValues(alpha: 0.92),
-  );
+  /// A letra de leitura, e nao mais a monoespaçada: o campo agora e onde a
+  /// nota e lida, e nao so onde o Markdown e digitado.
+  TextStyle _estiloDoTexto(ThemeData theme) =>
+      (theme.textTheme.bodyLarge ?? const TextStyle()).copyWith(
+        fontSize: 14.5,
+        height: 1.7,
+        color: theme.colorScheme.onSurface.withValues(alpha: 0.92),
+      );
 
   /// O painel de escrita: a ficha e o texto dentro de uma rolagem so.
   ///
   /// A rolagem e do painel, e nao do campo de texto, para a ficha subir junto
   /// com a nota — parada no topo ela roubaria altura de leitura em toda nota
-  /// longa. E o mesmo arranjo do preview, do outro lado.
+  /// longa.
   Widget _comFicha(ThemeData theme, Widget Function(double) texto) {
     return LayoutBuilder(
       builder: (context, constraints) => SingleChildScrollView(
         controller: _editorScroll,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [_ficha(theme), texto(constraints.maxHeight)],
+        // `topCenter`, e nao `Center`: a centralizaçao que interessa e so a
+        // horizontal, por causa da medida de linha limitada.
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            // Medida de linha limitada: texto corrido muito largo cansa a
+            // leitura, e o vault e feito para ser lido.
+            constraints: const BoxConstraints(maxWidth: _larguraDeLeitura),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [_ficha(theme), texto(constraints.maxHeight)],
+            ),
+          ),
         ),
       ),
     );
   }
+
+  static const _larguraDeLeitura = 820.0;
 
   /// O painel de escrita, um widget por bloco: Markdown cru nos campos de
   /// texto, grade nas tabelas.
@@ -1040,6 +994,7 @@ class NoteEditorState extends State<NoteEditor> {
     var campos = 0;
     var tabelas = 0;
     var quadros = 0;
+    var codigos = 0;
 
     for (var i = 0; i < _blocos.length; i++) {
       final bloco = _blocos[i];
@@ -1048,13 +1003,13 @@ class NoteEditorState extends State<NoteEditor> {
 
       switch (bloco) {
         case BlocoDeTexto():
-          // O campo que fecha a nota estica ate o fim do painel; os do meio
-          // ficam do tamanho do texto, encostados nas tabelas vizinhas.
+          // Uma nota sem blocos desenhados ocupa o painel inteiro; quando ha
+          // outros blocos, cada trecho fica do tamanho do proprio texto.
           final minima = !ultimo
               ? 0.0
               : _blocos.length == 1
               ? alturaMinima
-              : _alturaDoUltimoCampo;
+              : 0.0;
           filhos.add(
             _campoDeTexto(
               theme,
@@ -1068,6 +1023,8 @@ class NoteEditorState extends State<NoteEditor> {
           filhos.add(_grade(bloco, tabelas++));
         case BlocoDeQuadro():
           filhos.add(_cartaoDoQuadro(bloco, quadros++));
+        case BlocoDeCodigo():
+          filhos.add(_balaoDeCodigo(bloco, codigos++));
       }
     }
 
@@ -1076,10 +1033,6 @@ class NoteEditorState extends State<NoteEditor> {
       children: filhos,
     );
   }
-
-  /// Sobra clicavel embaixo da ultima tabela. Nao e o painel inteiro: com uma
-  /// tabela no fim, isso abriria uma tela de vazio embaixo dela.
-  static const _alturaDoUltimoCampo = 160.0;
 
   Widget _campoDeTexto(
     ThemeData theme,
@@ -1106,6 +1059,7 @@ class NoteEditorState extends State<NoteEditor> {
       cursorColor: theme.colorScheme.primary,
       cursorWidth: 1.6,
       style: _estiloDoTexto(theme),
+      onTap: () => _tocou(trecho),
       // As açoes continuam sendo as que o campo oferece — ele sabe quando cada
       // uma vale —, so que desenhadas com a cara do app e com a tabela
       // acrescentada no fim.
@@ -1120,6 +1074,14 @@ class NoteEditorState extends State<NoteEditor> {
             onPressed: () {
               campo.hideToolbar();
               unawaited(_inserirTabela());
+            },
+          ),
+          ItemDoMenu(
+            rotulo: 'Inserir codigo',
+            icone: Icons.code_rounded,
+            onPressed: () {
+              campo.hideToolbar();
+              _inserirCodigo();
             },
           ),
           ItemDoMenu(
@@ -1139,7 +1101,7 @@ class NoteEditorState extends State<NoteEditor> {
         focusedBorder: InputBorder.none,
         isDense: true,
         contentPadding: recuo,
-        hintText: primeiro ? 'Escreva em Markdown...' : null,
+        hintText: primeiro ? 'Escreva aqui...' : null,
         hintStyle: TextStyle(color: theme.colorScheme.onSurfaceVariant),
       ),
     );
@@ -1175,10 +1137,50 @@ class NoteEditorState extends State<NoteEditor> {
         key: ValueKey('tabela-$ordem'),
         tabela: bloco.tabela,
         autofocus: bloco.inicio == _tabelaNova,
-        onMudar: (nova) => _trocarBloco(bloco, nova.markdown),
+        // Procurada de novo a cada tecla, pelo mesmo motivo do balao de
+        // codigo: guardada daqui, a posiçao ficaria velha na segunda tecla.
+        onMudar: (nova) {
+          final tabelas = BlocosDaNota.de(
+            _controller.text,
+          ).whereType<BlocoDeTabela>().toList();
+          if (ordem < tabelas.length) {
+            _trocarBloco(tabelas[ordem], nova.markdown);
+          }
+        },
         onExcluir: () => _excluirBloco(bloco),
       ),
     );
+  }
+
+  /// O balao do bloco de codigo.
+  ///
+  /// Pela ordem, e nao pela posiçao no texto, pelo mesmo motivo da grade:
+  /// escrever acima dele nao o desmonta e remonta a cada tecla.
+  Widget _balaoDeCodigo(BlocoDeCodigo bloco, int ordem) {
+    return Padding(
+      padding: EdgeInsets.symmetric(horizontal: _recuo.left),
+      child: CodigoEditavel(
+        key: ValueKey('codigo-$ordem'),
+        bloco: bloco,
+        autofocus: bloco.inicio == _codigoNovo,
+        onMudar: (novo) => _trocarCodigo(ordem, novo),
+        onExcluir: () => _excluirBloco(bloco),
+      ),
+    );
+  }
+
+  /// Grava o balao [ordem] onde ele esta agora no texto.
+  ///
+  /// Procurado de novo a cada tecla, e nao guardado de quando o balao foi
+  /// desenhado: duas teclas podem chegar antes da tela se redesenhar, e a
+  /// segunda trocaria o trecho com o tamanho de antes da primeira — sobrava
+  /// uma crase da cerca a cada letra a mais.
+  void _trocarCodigo(int ordem, BlocoDeCodigo novo) {
+    final codigos = BlocosDaNota.de(
+      _controller.text,
+    ).whereType<BlocoDeCodigo>().toList();
+    if (ordem >= codigos.length) return;
+    _trocarBloco(codigos[ordem], novo.markdown);
   }
 
   /// O cartao do quadro no painel de escrita.
@@ -1263,11 +1265,16 @@ class NoteEditorState extends State<NoteEditor> {
     const larguraDaLista = 300.0;
     final altura = WikilinkSuggestions.alturaPara(_sugestoes.length);
 
-    // Mede o texto do mesmo jeito que o campo mede, para achar onde o cursor
-    // caiu. Refazer a conta e mais simples — e mais estavel entre versoes do
-    // Flutter — do que ir buscar o `RenderEditable` por dentro.
+    // Mede o texto do mesmo jeito que o campo desenha — titulos maiores,
+    // marcadores escondidos —, para achar onde o cursor caiu. Refazer a conta
+    // e mais simples, e mais estavel entre versoes do Flutter, do que ir
+    // buscar o `RenderEditable` por dentro.
     final medida = TextPainter(
-      text: TextSpan(text: trecho.campo.text, style: _estiloDoTexto(theme)),
+      text: trecho.campo.buildTextSpan(
+        context: context,
+        style: _estiloDoTexto(theme),
+        withComposing: false,
+      ),
       textDirection: TextDirection.ltr,
     )..layout(maxWidth: largura - recuo.horizontal);
 
@@ -1325,258 +1332,6 @@ class NoteEditorState extends State<NoteEditor> {
         onSugerirTags: widget.onSugerirTags,
       ),
     );
-  }
-
-  Widget _preview(ThemeData theme) {
-    // Reparseia a cada build para o preview acompanhar a digitaçao, em vez de
-    // mostrar o estado do arquivo em disco.
-    final parsed = Note.parse(widget.note.id, _arquivo, name: widget.note.name);
-
-    // O texto como ele vai ser desenhado. Sai daqui, e nao de dentro do
-    // `MarkdownBody`, porque o realce de codigo precisa olhar exatamente o
-    // mesmo texto para achar a linguagem de cada bloco.
-    final desenhado = PreviewMarkdown.preparar(parsed.body);
-
-    // O contador anda na ordem em que o parser desenha as caixas, que e a
-    // ordem delas no texto.
-    final total = MarkdownTasks.contar(parsed.body);
-    var proxima = 0;
-
-    // Mesma conta para os quadros: quem desenha recebe so o conteudo do bloco,
-    // e e a ordem que diz qual quadro do texto e aquele.
-    final totalDeQuadros = _quadros.length;
-
-    return SingleChildScrollView(
-      controller: _previewScroll,
-      padding: const EdgeInsets.fromLTRB(
-        AppTheme.gapXl,
-        AppTheme.gapLg,
-        AppTheme.gapXl,
-        48,
-      ),
-      // `topCenter`, e nao `Center`: a centralizaçao que interessa aqui e so a
-      // horizontal, por causa da medida de linha limitada. Deixar explicito
-      // que o texto começa no topo evita que a leitura volte a escorregar para
-      // o meio se a faixa ao redor mudar de restriçao.
-      child: Align(
-        alignment: Alignment.topCenter,
-        child: ConstrainedBox(
-          // Medida de linha limitada: texto corrido muito largo cansa a
-          // leitura, e o vault e feito para ser lido.
-          constraints: const BoxConstraints(maxWidth: 760),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              NoteProperties(
-                frontmatter: parsed.frontmatter,
-                onCampo: _definirCampo,
-                onSugerirTags: widget.onSugerirTags,
-              ),
-              const SizedBox(height: AppTheme.gapLg),
-              MarkdownBody(
-                // Os ajustes de leitura — `[[nota]]` virando link, item de
-                // lista ainda vazio deixando de virar titulo — acontecem so
-                // aqui. No arquivo, e no editor ao lado, o texto e o que foi
-                // escrito.
-                data: desenhado,
-                selectable: true,
-                // O realce dos blocos ``` precisa saber a linguagem de cada
-                // um, e quem desenha entrega so o texto de dentro do bloco.
-                syntaxHighlighter: RealceDeCodigo(
-                  porTrecho: PreviewMarkdown.linguagensDeCodigo(desenhado),
-                  base: _fonteDeCodigo,
-                ),
-                // O Enter do editor vale como quebra tambem aqui.
-                //
-                // No Markdown de origem uma quebra sozinha nao quebra nada: as
-                // linhas de um mesmo paragrafo sao emendadas, porque o texto
-                // era escrito com largura fixa e a quebra so existia no
-                // arquivo. Numa nota digitada ao lado do preview a conta e
-                // outra — quem apertou Enter apertou para pular a linha, e via
-                // as duas metades emendarem do outro lado da tela.
-                softLineBreak: true,
-                onTapLink: (_, href, _) {
-                  final titulo = href == null ? null : Wikilink.tituloDe(href);
-                  if (titulo != null) widget.onAbrirLink?.call(titulo);
-                },
-                // Traz o TaskListSyntax — sem ele as listas de tarefa
-                // (`- [ ]` / `- [x]`) viram texto solto — e a cerca do quadro.
-                extensionSet: PreviewMarkdown.extensoes,
-                // O quadro nao e texto: o parser separa o bloco, e quem monta
-                // o desenho no lugar dele e este construtor.
-                builders: {
-                  QuadroDaNota.marcador: _QuadroDoPreview(
-                    total: totalDeQuadros,
-                    desenhar: (quadro, ordem) => QuadroNoTexto(
-                      quadro: quadro,
-                      onAbrir: () => unawaited(_abrirQuadro(ordem)),
-                    ),
-                  ),
-                },
-                checkboxBuilder: (checked) {
-                  // O MarkdownBody pode se reconstruir sem passar por
-                  // `_preview` de novo, e ai o contador continuaria de onde
-                  // parou. O resto da divisao realinha ele a cada passada.
-                  final indice = total == 0 ? 0 : proxima++ % total;
-                  return _CaixaDeTarefa(
-                    marcada: checked,
-                    onTap: () => _alternarTarefa(indice),
-                  );
-                },
-                styleSheet: _markdownStyle(theme),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Estilo do Markdown renderizado: hierarquia clara, blocos delimitados por
-  /// borda em vez de preenchimento forte, citaçao marcada por barra lateral.
-  MarkdownStyleSheet _markdownStyle(ThemeData theme) {
-    final scheme = theme.colorScheme;
-    const mono = _fonteDeCodigo;
-
-    // Titulo e negrito nao competem mais pelo mesmo azul.
-    //
-    // Cada nivel de titulo tem sua propria matiz (nao so uma variaçao de
-    // claridade do mesmo azul) porque duas matizes muito proximas — como
-    // h2 e h3 ficavam antes — sao dificeis de distinguir a olho quando
-    // aparecem perto uma da outra. O tamanho da fonte continua reforçando
-    // a hierarquia; a cor agora ajuda a diferenciar, nao so a ordenar.
-    // Negrito sai dessa paleta de proposito — e o que voce mesmo destacou
-    // no meio do texto corrido, nao a estrutura da nota, e precisa ser
-    // reconhecido de longe mesmo num h6 do tamanho de um paragrafo.
-    const toneDeTitulo = [
-      Color(0xFF4FA8E0), // h1 — azul
-      Color(0xFF63C29A), // h2 — verde-agua
-      Color(0xFFD8A657), // h3 — dourado
-      Color(0xFFCE7DE0), // h4 — lilas
-      Color(0xFFE0836F), // h5 — terracota
-      Color(0xFF8FB4E0), // h6 — azul acinzentado
-    ];
-    // Rosa: nao e nenhuma das matizes de titulo acima, pra nunca se
-    // confundir com o h3 dourado quando um negrito aparece perto de um
-    // titulo (era o caso antes, com F2B84B quase igual ao D8A657 do h3).
-    const destaqueNegrito = Color(0xFFE8659B);
-
-    TextStyle? titulo(TextStyle? base, double tamanho, int nivel) => base
-        ?.copyWith(fontSize: tamanho, height: 1.4, color: toneDeTitulo[nivel]);
-
-    return MarkdownStyleSheet.fromTheme(theme).copyWith(
-      h1: titulo(theme.textTheme.titleLarge, 26, 0)?.copyWith(height: 1.3),
-      h2: titulo(theme.textTheme.titleLarge, 19, 1),
-      h3: titulo(theme.textTheme.titleMedium, 16, 2),
-      h4: titulo(theme.textTheme.titleMedium, 14.5, 3),
-      h5: titulo(theme.textTheme.titleSmall, 13.5, 4),
-      h6: titulo(theme.textTheme.titleSmall, 12.5, 5),
-      // `strong` so troca a cor e reforça o peso; o resto da linha continua
-      // herdando o estilo de onde o negrito estiver — paragrafo, item de
-      // lista, celula de tabela.
-      strong: const TextStyle(
-        fontWeight: FontWeight.w700,
-        color: destaqueNegrito,
-      ),
-      // O italico sozinho e discreto demais para se notar numa leitura
-      // corrida — a inclinaçao da fonte do sistema e sutil. Uma cor mais
-      // apagada que o texto normal reforça o mesmo destaque que a citaçao ja
-      // usa, sem depender so do angulo da letra.
-      em: TextStyle(
-        fontStyle: FontStyle.italic,
-        color: scheme.onSurfaceVariant,
-      ),
-      h1Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
-      h2Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
-      h3Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
-      h4Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
-      h5Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
-      h6Padding: const EdgeInsets.only(top: AppTheme.gapSm, bottom: 2),
-      p: theme.textTheme.bodyLarge?.copyWith(fontSize: 14.5, height: 1.7),
-      pPadding: const EdgeInsets.only(bottom: AppTheme.gapMd),
-      listBullet: theme.textTheme.bodyLarge?.copyWith(fontSize: 14.5),
-      listBulletPadding: const EdgeInsets.only(right: AppTheme.gapSm),
-      a: TextStyle(
-        color: scheme.primary,
-        decoration: TextDecoration.underline,
-        decorationColor: scheme.primary.withValues(alpha: 0.35),
-      ),
-      code: mono.copyWith(
-        color: scheme.primary,
-        backgroundColor: scheme.surfaceContainerHigh,
-      ),
-      codeblockPadding: const EdgeInsets.all(AppTheme.gapLg),
-      codeblockDecoration: BoxDecoration(
-        color: scheme.surfaceContainerLowest,
-        borderRadius: BorderRadius.circular(AppTheme.radiusMd),
-        border: Border.all(color: scheme.outline),
-      ),
-      blockquote: theme.textTheme.bodyLarge?.copyWith(
-        fontSize: 14.5,
-        color: scheme.onSurfaceVariant,
-        fontStyle: FontStyle.italic,
-      ),
-      blockquotePadding: const EdgeInsets.fromLTRB(AppTheme.gapLg, 4, 0, 4),
-      blockquoteDecoration: BoxDecoration(
-        border: Border(
-          left: BorderSide(
-            color: scheme.primary.withValues(alpha: 0.5),
-            width: 2,
-          ),
-        ),
-      ),
-      horizontalRuleDecoration: BoxDecoration(
-        border: Border(top: BorderSide(color: scheme.outline)),
-      ),
-      tableBorder: TableBorder.all(color: scheme.outline, width: 1),
-      tableHead: theme.textTheme.bodyMedium?.copyWith(
-        fontWeight: FontWeight.w600,
-      ),
-      tableCellsPadding: const EdgeInsets.symmetric(
-        horizontal: AppTheme.gapMd,
-        vertical: AppTheme.gapSm,
-      ),
-    );
-  }
-}
-
-/// Monta o cartao do quadro no lugar do bloco ```quadro do preview.
-///
-/// O parser entrega so o conteudo do bloco, sem dizer qual dos quadros da nota
-/// e aquele — e a ordem de desenho que diz, do mesmo jeito que diz qual caixa
-/// de tarefa foi clicada. O resto da divisao realinha a contagem quando o
-/// preview se redesenha sem passar pelo editor de novo.
-class _QuadroDoPreview extends MarkdownElementBuilder {
-  _QuadroDoPreview({required this.desenhar, required this.total});
-
-  final Widget Function(QuadroDaNota quadro, int ordem) desenhar;
-  final int total;
-
-  int _proximo = 0;
-
-  @override
-  bool isBlockElement() => true;
-
-  @override
-  Widget? visitElementAfterWithContext(
-    BuildContext context,
-    md.Element element,
-    TextStyle? preferredStyle,
-    TextStyle? parentStyle,
-  ) {
-    final quadro = QuadroDaNota.ler(element.textContent);
-
-    // Bloco estragado nao conta na ordem: ele tambem nao virou quadro do lado
-    // do editor, e contar aqui desalinharia todos os seguintes.
-    if (quadro == null) {
-      return Text(
-        'Nao foi possivel ler este quadro.',
-        style: TextStyle(color: Theme.of(context).colorScheme.error),
-      );
-    }
-
-    final ordem = total == 0 ? 0 : _proximo++ % total;
-    return desenhar(quadro, ordem);
   }
 }
 

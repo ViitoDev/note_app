@@ -37,12 +37,14 @@ void main() {
     final blocos = BlocosDaNota.de(corpo);
 
     expect(blocos.length, 3);
-    expect((blocos[0] as BlocoDeTexto).texto, 'Antes\n\n');
+    // A linha em branco que separa a tabela do texto fica no arquivo, mas nao
+    // vira uma linha vazia no campo.
+    expect((blocos[0] as BlocoDeTexto).texto, 'Antes');
     expect((blocos[1] as BlocoDeTabela).tabela.celulas, [
       ['a', 'b'],
       ['c', 'd'],
     ]);
-    expect((blocos[2] as BlocoDeTexto).texto, '\n\nDepois\n');
+    expect((blocos[2] as BlocoDeTexto).texto, '\nDepois\n');
     _offsetsBatem(corpo);
   });
 
@@ -53,13 +55,67 @@ void main() {
     expect(corpo.substring(tabela.inicio, tabela.fim), '| a |\n| --- |\n| c |');
   });
 
-  test('tabela dentro de bloco de codigo continua sendo texto', () {
+  test('tabela dentro de bloco de codigo fica no codigo', () {
     // Ali ela esta sendo mostrada como exemplo; desenha-la apagaria o exemplo.
     const corpo = '```\n| a | b |\n| --- | --- |\n```\n';
     final blocos = BlocosDaNota.de(corpo);
 
     expect(blocos.whereType<BlocoDeTabela>(), isEmpty);
-    expect((blocos.single as BlocoDeTexto).texto, corpo);
+    expect(
+      blocos.whereType<BlocoDeCodigo>().single.codigo,
+      '| a | b |\n| --- | --- |',
+    );
+  });
+
+  group('bloco de codigo', () {
+    test('vira balao, com a linguagem e o codigo separados', () {
+      const corpo = 'Antes\n\n``` Java\nint a;\nint b;\n```\n\nDepois';
+      final blocos = BlocosDaNota.de(corpo);
+      final codigo = blocos.whereType<BlocoDeCodigo>().single;
+
+      expect(codigo.linguagem, 'Java');
+      expect(codigo.codigo, 'int a;\nint b;');
+      expect(
+        corpo.substring(codigo.inicio, codigo.fim),
+        '``` Java\nint a;\nint b;\n```',
+      );
+      expect(codigo.markdown, corpo.substring(codigo.inicio, codigo.fim));
+      _offsetsBatem(corpo);
+    });
+
+    test('sem fechamento continua texto', () {
+      // O resto da nota nao pode ser engolido por um bloco pela metade.
+      const corpo = '```python\nprint(1)\ncontinua';
+      expect(BlocosDaNota.de(corpo).whereType<BlocoDeCodigo>(), isEmpty);
+    });
+
+    test('quatro crases mostram tres dentro', () {
+      const corpo = '````\n```py\nx\n```\n````\nfim';
+      final codigo = BlocosDaNota.de(corpo).whereType<BlocoDeCodigo>().single;
+      expect(codigo.codigo, '```py\nx\n```');
+    });
+
+    test('bloco vazio volta ao arquivo sem linha em branco', () {
+      const corpo = '```py\n```';
+      final codigo = BlocosDaNota.de(corpo).whereType<BlocoDeCodigo>().single;
+      expect(codigo.codigo, '');
+      expect(codigo.markdown, corpo);
+    });
+
+    test('trocar a linguagem mantem a cerca como foi escrita', () {
+      const corpo = '~~~~ py\nx = 1\n~~~~';
+      final codigo = BlocosDaNota.de(corpo).whereType<BlocoDeCodigo>().single;
+      expect(codigo.comLinguagem('python').markdown, '~~~~python\nx = 1\n~~~~');
+    });
+
+    test('dois blocos seguidos saem separados', () {
+      const corpo = '```a\n1\n```\n\n```b\n2\n```';
+      final codigos = BlocosDaNota.de(
+        corpo,
+      ).whereType<BlocoDeCodigo>().toList();
+      expect(codigos.map((c) => c.linguagem), ['a', 'b']);
+      _offsetsBatem(corpo);
+    });
   });
 
   test('tabela no fim da nota, sem quebra depois', () {
@@ -87,7 +143,39 @@ void main() {
     final blocos = BlocosDaNota.de(corpo);
 
     expect(blocos.whereType<BlocoDeTabela>().length, 2);
-    expect((blocos[2] as BlocoDeTexto).texto, '\n\nmeio\n\n');
+    expect((blocos[2] as BlocoDeTexto).texto, 'meio');
+    _offsetsBatem(corpo);
+  });
+
+  test('tabela colada no texto sai sem linha em branco em volta', () {
+    const corpo = 'Operadores:\n| a |\n| --- |\n| c |\n## Exemplos\n';
+    final blocos = BlocosDaNota.de(corpo);
+
+    expect((blocos[0] as BlocoDeTexto).texto, 'Operadores:');
+    expect((blocos[2] as BlocoDeTexto).texto, '## Exemplos\n');
+    _offsetsBatem(corpo);
+  });
+
+  test('a quebra que e a unica entre dois desenhados continua no campo', () {
+    // Tirada, o campo do meio ficaria vazio, e o que se escrevesse nele
+    // grudaria na tabela ou na cerca do codigo.
+    const corpo = '| a |\n| --- |\n```\nx\n```';
+    final blocos = BlocosDaNota.de(corpo);
+
+    expect(blocos[1], isA<BlocoDeTabela>());
+    expect(blocos[3], isA<BlocoDeCodigo>());
+    expect((blocos[2] as BlocoDeTexto).texto, '\n');
+    _offsetsBatem(corpo);
+  });
+
+  test('linha em branco entre duas tabelas vira campo vazio entre elas', () {
+    const corpo = '| a |\n| --- |\n\n| b |\n| --- |';
+    final blocos = BlocosDaNota.de(corpo);
+
+    expect(blocos.whereType<BlocoDeTabela>().length, 2);
+    expect((blocos[2] as BlocoDeTexto).texto, '');
+    // Escrever ali cai entre as duas quebras, em linha propria.
+    expect(blocos[2].inicio, corpo.indexOf('\n\n') + 1);
     _offsetsBatem(corpo);
   });
 
@@ -111,9 +199,9 @@ void main() {
       final blocos = BlocosDaNota.de(corpo);
 
       expect(blocos.length, 3);
-      expect((blocos[0] as BlocoDeTexto).texto, 'Antes\n\n');
+      expect((blocos[0] as BlocoDeTexto).texto, 'Antes');
       expect((blocos[1] as BlocoDeQuadro).quadro.nos.single.texto, 'Inicio');
-      expect((blocos[2] as BlocoDeTexto).texto, '\n\nDepois\n');
+      expect((blocos[2] as BlocoDeTexto).texto, 'Depois\n');
       _offsetsBatem(corpo);
     });
 

@@ -53,7 +53,8 @@ class VaultService implements VaultRepository {
   /// privado, que nao monta nada no Explorer.
   @override
   String? get defaultStartPath {
-    final home = Platform.environment['USERPROFILE'];
+    final home =
+        Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'];
     if (home == null) return null;
     final documentos = p.join(home, 'Documents');
     return Directory(documentos).existsSync() ? documentos : home;

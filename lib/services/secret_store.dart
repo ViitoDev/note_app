@@ -24,6 +24,8 @@ class SecretStore {
   static const _prefixo = 'secret.';
 
   Future<String?> read(String chave) async {
+    if (Platform.isLinux) return _Chaveiro.ler(chave);
+
     final prefs = await SharedPreferences.getInstance();
     final guardado = prefs.getString('$_prefixo$chave');
     if (guardado == null) return null;
@@ -39,19 +41,24 @@ class SecretStore {
   }
 
   Future<void> write(String chave, String valor) async {
+    if (Platform.isLinux) return _Chaveiro.gravar(chave, valor);
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('$_prefixo$chave', base64Encode(_cifrar(valor)));
   }
 
   Future<void> delete(String chave) async {
+    if (Platform.isLinux) return _Chaveiro.apagar(chave);
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('$_prefixo$chave');
   }
 
   // ------------------------------------------------------------------ DPAPI
 
-  /// Fora do Windows nao ha DPAPI. Guardar em texto puro seria pior do que
-  /// falhar, entao o app so oferece e-mail no Windows.
+  /// Fora do Windows nao ha DPAPI. No Linux o segredo vai para o chaveiro do
+  /// sistema ([_Chaveiro]); em qualquer outro lugar, guardar em texto puro
+  /// seria pior do que falhar.
   static bool get _temDpapi => Platform.isWindows;
 
   static Uint8List _cifrar(String valor) {
@@ -103,5 +110,49 @@ class SecretStore {
         ..free(blobIn)
         ..free(blobOut);
     }
+  }
+}
+
+/// O equivalente do DPAPI no Linux: o chaveiro do sistema (gnome-keyring,
+/// KWallet), falado pelo `secret-tool` da libsecret.
+///
+/// O segredo inteiro vive no chaveiro, nao nas preferencias. Como o DPAPI, a
+/// chave fica amarrada a sessao do usuario, e o arquivo de preferencias
+/// copiado para outra maquina nao carrega senha nenhuma.
+abstract final class _Chaveiro {
+  static const _app = 'notas_app';
+
+  static List<String> _atributos(String chave) => ['app', _app, 'chave', chave];
+
+  static Future<String?> ler(String chave) async {
+    final r = await Process.run('secret-tool', [
+      'lookup',
+      ..._atributos(chave),
+    ]);
+    // Codigo de saida diferente de zero e "nao ha esse segredo" — ou chaveiro
+    // trancado. Nos dois casos o formulario volta vazio, como no Windows.
+    if (r.exitCode != 0) return null;
+    final valor = r.stdout as String;
+    return valor.isEmpty ? null : valor;
+  }
+
+  static Future<void> gravar(String chave, String valor) async {
+    final processo = await Process.start('secret-tool', [
+      'store',
+      '--label=Notas: $chave',
+      ..._atributos(chave),
+    ]);
+    // A senha entra pelo stdin: na linha de comando ela apareceria para
+    // qualquer processo que listasse os outros.
+    processo.stdin.write(valor);
+    await processo.stdin.close();
+    final erro = await processo.stderr.transform(utf8.decoder).join();
+    if (await processo.exitCode != 0) {
+      throw FileSystemException('O chaveiro recusou o segredo: ${erro.trim()}');
+    }
+  }
+
+  static Future<void> apagar(String chave) async {
+    await Process.run('secret-tool', ['clear', ..._atributos(chave)]);
   }
 }

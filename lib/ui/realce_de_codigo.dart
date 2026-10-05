@@ -140,34 +140,79 @@ class RealceDeCodigo implements SyntaxHighlighter {
 
   @override
   TextSpan format(String source) {
-    final semRealce = TextSpan(
-      text: source,
-      style: base.copyWith(color: Darcula.texto),
-    );
-
-    final declarada = porTrecho[source.trimRight()];
-    final linguagem = _apelidos[declarada] ?? declarada;
-    if (linguagem == null || !_linguagens.containsKey(linguagem)) {
-      return semRealce;
-    }
-
-    final nos = highlight.parse(source, language: linguagem).nodes;
-    if (nos == null || nos.isEmpty) return semRealce;
-
-    return TextSpan(
-      style: base.copyWith(color: Darcula.texto),
-      children: _spans(nos),
-    );
+    final cor = base.copyWith(color: Darcula.texto);
+    final pedacos = realcarCodigo(source, porTrecho[source.trimRight()]);
+    return pedacos == null
+        ? TextSpan(text: source, style: cor)
+        : TextSpan(style: cor, children: pedacos);
   }
+}
 
-  List<TextSpan> _spans(List<Node> nos) {
-    return [
-      for (final no in nos)
-        TextSpan(
-          text: no.value,
+/// Os pedaços de [codigo] com as cores da [linguagem] — o nome como veio
+/// escrito na cerca, `Java`, `py`, `c#`.
+///
+/// Nulo quando nao ha o que realçar: linguagem nao declarada ou que o app nao
+/// conhece. Os pedaços juntos dao exatamente [codigo], letra por letra — o
+/// editor desenha o texto que se edita, e nao pode ganhar nem perder nada.
+List<TextSpan>? realcarCodigo(String codigo, String? linguagem) {
+  _registrar();
+  final declarada = linguagem?.trim().toLowerCase();
+  final nome = _apelidos[declarada] ?? declarada;
+  if (nome == null || !_linguagens.containsKey(nome)) return null;
+
+  // O tokenizador le uma copia com as aspas acertadas, e os pedaços saem
+  // recortados do original: o que aparece na tela e o que foi escrito.
+  final nos = highlight.parse(_comAspasRetas(codigo), language: nome).nodes;
+  if (nos == null || nos.isEmpty) return null;
+  var lido = 0;
+  return _recortar(nos, codigo, () => lido, (n) => lido += n);
+}
+
+/// Aspas que nao sao aspas de codigo, mas quase sempre queriam ser.
+///
+/// O trema sai de um teclado configurado no layout errado, e as curvas vem
+/// coladas de slide, PDF ou editor de texto. A gramatica do Python nao aceita
+/// nenhuma delas e desiste do bloco inteiro — nem o `if` saia colorido. Todas
+/// ocupam uma posiçao so, como as retas, entao trocar uma pela outra nao
+/// desloca nenhum pedaço do texto.
+const _aspasTortas = {
+  '¨': '"',
+  '“': '"',
+  '”': '"',
+  '„': '"',
+  '‘': "'",
+  '’': "'",
+  '´': "'",
+};
+
+final _aspaTorta = RegExp('[${_aspasTortas.keys.join()}]');
+
+String _comAspasRetas(String codigo) =>
+    codigo.replaceAllMapped(_aspaTorta, (m) => _aspasTortas[m[0]]!);
+
+/// Refaz a arvore do tokenizador com o texto de [original].
+List<TextSpan> _recortar(
+  List<Node> nos,
+  String original,
+  int Function() posicao,
+  void Function(int) andar,
+) {
+  return [
+    for (final no in nos)
+      () {
+        String? texto;
+        if (no.value != null) {
+          final inicio = posicao();
+          texto = original.substring(inicio, inicio + no.value!.length);
+          andar(no.value!.length);
+        }
+        return TextSpan(
+          text: texto,
           style: Darcula.porClasse[no.className],
-          children: no.children == null ? null : _spans(no.children!),
-        ),
-    ];
-  }
+          children: no.children == null
+              ? null
+              : _recortar(no.children!, original, posicao, andar),
+        );
+      }(),
+  ];
 }

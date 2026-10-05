@@ -4,20 +4,46 @@ import 'dart:io';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:notas_app/models/kanban_card.dart';
 import 'package:notas_app/models/nota_de_quadro.dart';
 import 'package:notas_app/models/note.dart';
 import 'package:notas_app/models/quadro_da_nota.dart';
 import 'package:notas_app/ui/app_theme.dart';
+import 'package:notas_app/ui/codigo_editavel.dart';
 import 'package:notas_app/ui/desenho_do_quadro.dart';
 import 'package:notas_app/ui/note_editor.dart';
 import 'package:notas_app/ui/quadro_no_texto.dart';
 import 'package:notas_app/ui/quadro_tela_cheia.dart';
-import 'package:notas_app/ui/realce_de_codigo.dart';
 import 'package:notas_app/ui/tabela_editavel.dart';
 import 'package:notas_app/ui/wikilink_suggestions.dart';
+
+/// Clica no caractere [offset] do campo de texto da nota.
+///
+/// A nota agora e escrita e lida no mesmo campo, entao clicar numa caixa ou
+/// num link e clicar numa letra dele: acha-se onde a letra foi desenhada e o
+/// toque vai no meio dela.
+Future<void> tocarNoTexto(WidgetTester tester, int offset) async {
+  final estado = tester.state<EditableTextState>(
+    find.descendant(
+      of: find.byType(TextField).first,
+      matching: find.byType(EditableText),
+    ),
+  );
+  final render = estado.renderEditable;
+  final antes = render.getLocalRectForCaret(TextPosition(offset: offset));
+  final depois = render.getLocalRectForCaret(TextPosition(offset: offset + 1));
+  await tester.tapAt(
+    render.localToGlobal(
+      Offset((antes.left + depois.left) / 2, antes.center.dy),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
+/// O texto no campo de escrita da nota — o corpo, sem o cabeçalho.
+String textoDoCampo(WidgetTester tester) =>
+    tester.widget<TextField>(find.byType(TextField).first).controller!.text;
 
 void main() {
   group('salvar sozinho', () {
@@ -207,9 +233,7 @@ void main() {
     expect(key.currentState!.isDirty, isTrue);
   });
 
-  group('caixas de tarefa no preview', () {
-    /// Monta o editor numa janela larga: abaixo de 900px ele cai no modo so
-    /// texto, e ai nao ha preview nem caixa para clicar.
+  group('caixas de tarefa no texto', () {
     Future<ValueGetter<String?>> montar(
       WidgetTester tester,
       String conteudo,
@@ -234,13 +258,20 @@ void main() {
       return () => gravado;
     }
 
+    /// Clica dentro da [qual]-esima caixa do texto.
+    Future<void> tocarNaCaixa(WidgetTester tester, int qual) async {
+      final texto = textoDoCampo(tester);
+      var caixa = -1;
+      for (var i = 0; i <= qual; i++) {
+        caixa = texto.indexOf(RegExp(r'\[[ xX]\]'), caixa + 1);
+      }
+      await tocarNoTexto(tester, caixa + 1);
+    }
+
     testWidgets('clicar numa caixa vazia marca e grava', (tester) async {
       final gravado = await montar(tester, '- [ ] Um\n- [ ] Dois');
 
-      await tester.tap(
-        find.byIcon(Icons.check_box_outline_blank_rounded).first,
-      );
-      await tester.pumpAndSettle();
+      await tocarNaCaixa(tester, 0);
 
       expect(gravado(), '- [x] Um\n- [ ] Dois');
     });
@@ -248,10 +279,7 @@ void main() {
     testWidgets('a segunda caixa mexe na segunda linha', (tester) async {
       final gravado = await montar(tester, '- [ ] Um\n- [ ] Dois');
 
-      await tester.tap(
-        find.byIcon(Icons.check_box_outline_blank_rounded).at(1),
-      );
-      await tester.pumpAndSettle();
+      await tocarNaCaixa(tester, 1);
 
       expect(gravado(), '- [ ] Um\n- [x] Dois');
     });
@@ -259,29 +287,36 @@ void main() {
     testWidgets('clicar numa caixa marcada desmarca', (tester) async {
       final gravado = await montar(tester, '- [ ] Um\n- [x] Dois');
 
-      await tester.tap(find.byIcon(Icons.check_box_rounded));
-      await tester.pumpAndSettle();
+      await tocarNaCaixa(tester, 1);
 
       expect(gravado(), '- [ ] Um\n- [ ] Dois');
     });
 
+    testWidgets('clicar no texto da tarefa nao marca nada', (tester) async {
+      // A caixa e o alvo; o resto da linha e texto como qualquer outro, e
+      // clicar nele e para escrever.
+      final gravado = await montar(tester, '- [ ] Comprar pao');
+
+      await tocarNoTexto(tester, textoDoCampo(tester).indexOf('pao'));
+
+      expect(gravado(), isNull);
+      expect(textoDoCampo(tester), '- [ ] Comprar pao');
+    });
+
     testWidgets('o frontmatter sai intacto', (tester) async {
-      // O preview desenha so o corpo, mas o que e gravado e o arquivo inteiro:
-      // o indice da caixa nao pode escorregar por causa do cabeçalho.
+      // O campo segura so o corpo, mas o que e gravado e o arquivo inteiro.
       final gravado = await montar(
         tester,
         '---\ntipo: nota\ntags: [a]\n---\n\n- [ ] Tarefa\n',
       );
 
-      await tester.tap(find.byIcon(Icons.check_box_outline_blank_rounded));
-      await tester.pumpAndSettle();
+      await tocarNaCaixa(tester, 0);
 
       expect(gravado(), '---\ntipo: nota\ntags: [a]\n---\n\n- [x] Tarefa\n');
     });
   });
 
   group('ficha de propriedades da nota', () {
-    /// Janela larga: e no preview que vive a ficha.
     Future<ValueGetter<String?>> montar(
       WidgetTester tester,
       String conteudo,
@@ -354,39 +389,21 @@ void main() {
       expect(noEditor(tester), contains('tipo: [nota'));
     });
 
-    testWidgets('no modo so texto a ficha vem para cima do editor', (
-      tester,
-    ) async {
-      await montar(tester, '---\ntipo: nota\n---\n\nCorpo\n');
-
-      await tester.tap(find.byTooltip('Editar'));
-      await tester.pumpAndSettle();
-
-      // Sem preview na tela, a ficha e o unico acesso ao frontmatter.
-      expect(find.text('Tipo'), findsOneWidget);
-      expect(find.text('Tags'), findsOneWidget);
-    });
-
-    // No modo dividido a ficha encabeça os dois paines, entao cada campo dela
-    // aparece duas vezes na tela.
-    const nosDois = 2;
-
-    testWidgets('a ficha encabeça os dois paines', (tester) async {
+    testWidgets('a ficha encabeça a nota', (tester) async {
       await montar(tester, '---\ntipo: nota\ntags: [ufms, ead]\n---\n\nOi\n');
 
       // A lista de campos e o que ensina o que uma nota pode virar; por isso
       // ela aparece inteira mesmo numa nota que so tem tipo e tags.
       for (final campo in ['Tipo', 'Data', 'Hora', 'Status', 'Tags']) {
-        expect(find.text(campo), findsNWidgets(nosDois), reason: campo);
+        expect(find.text(campo), findsOneWidget, reason: campo);
       }
 
-      expect(find.text('Nota'), findsNWidgets(nosDois));
-      expect(find.text('#ufms'), findsNWidgets(nosDois));
-      expect(find.text('#ead'), findsNWidgets(nosDois));
+      expect(find.text('Nota'), findsOneWidget);
+      expect(find.text('#ufms'), findsOneWidget);
+      expect(find.text('#ead'), findsOneWidget);
 
-      // Data, hora e status estao vazios: tres convites para preencher, de
-      // cada lado.
-      expect(find.text('definir'), findsNWidgets(3 * nosDois));
+      // Data, hora e status estao vazios: tres convites para preencher.
+      expect(find.text('definir'), findsNWidgets(3));
     });
 
     testWidgets('campo vazio nao chega a existir no arquivo', (tester) async {
@@ -394,28 +411,15 @@ void main() {
 
       // A ficha inteira aparece, mas o `.md` continua sem frontmatter nenhum
       // ate alguem escolher alguma coisa.
-      expect(find.text('definir'), findsNWidgets(4 * nosDois));
+      expect(find.text('definir'), findsNWidgets(4));
       expect(gravado(), isNull);
-    });
-
-    testWidgets('mexer numa ficha aparece na outra', (tester) async {
-      // As duas nao guardam estado proprio: ambas leem o frontmatter do
-      // arquivo. Sem isso, um campo mudado num lado ficaria velho no outro.
-      await montar(tester, 'Corpo\n');
-
-      await tester.tap(find.text('definir').first);
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Evento — entra no calendario'));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Evento — entra no calendario'), findsNWidgets(nosDois));
     });
 
     testWidgets('data ISO do frontmatter sai por extenso', (tester) async {
       await montar(tester, '---\ndata: 2026-08-10\n---\n\nOi\n');
 
-      expect(find.text('Data'), findsNWidgets(nosDois));
-      expect(find.text('10 de agosto de 2026'), findsNWidgets(nosDois));
+      expect(find.text('Data'), findsOneWidget);
+      expect(find.text('10 de agosto de 2026'), findsOneWidget);
     });
 
     testWidgets('campo que a ficha nao edita continua a vista', (tester) async {
@@ -423,15 +427,14 @@ void main() {
       // aparece embaixo, em vez de sumir da tela.
       await montar(tester, '---\ncriado_em: 2026-08-10\n---\n\nOi\n');
 
-      expect(find.text('Criado em'), findsNWidgets(nosDois));
-      expect(find.text('10 de agosto de 2026'), findsNWidgets(nosDois));
+      expect(find.text('Criado em'), findsOneWidget);
+      expect(find.text('10 de agosto de 2026'), findsOneWidget);
     });
 
     testWidgets('escolher o tipo grava a linha no frontmatter', (tester) async {
       final gravado = await montar(tester, 'Corpo\n');
 
-      // Os campos vazios saem na ordem da ficha — tipo, data, hora, status —
-      // e a do painel da esquerda vem primeiro.
+      // Os campos vazios saem na ordem da ficha — tipo, data, hora, status.
       await tester.tap(find.text('definir').first);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Evento — entra no calendario'));
@@ -514,7 +517,7 @@ void main() {
 
       // Nota sem frontmatter ganha o bloco; o corpo continua onde estava.
       expect(gravado(), '---\ntags: [estudos]\n---\n\nSó o corpo.\n');
-      expect(find.text('#estudos'), findsNWidgets(nosDois));
+      expect(find.text('#estudos'), findsOneWidget);
     });
 
     testWidgets('uma digitada marca varias tags de uma vez', (tester) async {
@@ -1101,173 +1104,9 @@ void main() {
       expect(find.byType(TabelaEditavel), findsNothing);
       expect(gravado(), 'Antes\n\nDepois');
     });
-
-    testWidgets('a tabela escrita sai desenhada no preview', (tester) async {
-      // Ponta a ponta: o que o menu escreve tem que atravessar os ajustes do
-      // preview e chegar do outro lado como tabela, e nao como texto com
-      // barras.
-      await montar(tester, '| Coluna 1 | Coluna 2 |\n| --- | --- |\n|  |  |\n');
-
-      expect(
-        find.descendant(
-          of: find.byType(MarkdownBody),
-          matching: find.byType(Table),
-        ),
-        findsOneWidget,
-      );
-    });
   });
 
-  group('os dois lados acompanham a mesma parte da nota', () {
-    testWidgets('rolar o texto leva o preview junto', (tester) async {
-      tester.view.physicalSize = const Size(1200, 700);
-      tester.view.devicePixelRatio = 1.0;
-      addTearDown(tester.view.reset);
-
-      // Nota longa o bastante para os dois lados rolarem.
-      final longa = [for (var i = 0; i < 120; i++) 'Linha $i'].join('\n\n');
-
-      await tester.pumpWidget(
-        MaterialApp(
-          theme: AppTheme.dark,
-          home: Scaffold(
-            body: NoteEditor(
-              note: Note.parse('/vault/n.md', longa),
-              onSave: (_) async {},
-              onDirtyChanged: (_) {},
-            ),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      final rolagens = find.byType(SingleChildScrollView);
-      double posicao(int qual) => tester
-          .widget<SingleChildScrollView>(rolagens.at(qual))
-          .controller!
-          .offset;
-
-      expect(posicao(1), 0);
-
-      // Arrasta o painel de escrita para baixo.
-      await tester.drag(rolagens.first, const Offset(0, -300));
-      await tester.pumpAndSettle();
-
-      expect(posicao(0), greaterThan(0));
-      // O preview foi junto, na mesma altura relativa.
-      expect(posicao(1), greaterThan(0));
-    });
-  });
-
-  testWidgets('a quebra de linha do editor e quebra no preview', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(1200, 800);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.reset);
-
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: AppTheme.dark,
-        home: Scaffold(
-          body: NoteEditor(
-            note: Note.parse('/vault/n.md', 'Linha um\nLinha dois\n'),
-            onSave: (_) async {},
-            onDirtyChanged: (_) {},
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    // Sem isto as duas linhas sairiam emendadas num paragrafo so — regra de
-    // Markdown escrito para largura fixa, nao para nota digitada ao lado do
-    // preview.
-    expect(
-      tester.widget<MarkdownBody>(find.byType(MarkdownBody)).softLineBreak,
-      isTrue,
-    );
-    expect(
-      find.descendant(
-        of: find.byType(MarkdownBody),
-        matching: find.text('Linha um\nLinha dois', findRichText: true),
-      ),
-      findsOneWidget,
-    );
-  });
-
-  testWidgets('o bloco de codigo sai realçado no preview', (tester) async {
-    // Ponta a ponta: a nota entra com a cerca ``` e o preview tem que sair com
-    // as cores. O caminho passa por achar a linguagem da cerca e casa-la com o
-    // texto que o desenho recebe — e foi ai que ja quebrou uma vez, num bloco
-    // com aspas.
-    tester.view.physicalSize = const Size(1200, 800);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.reset);
-
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: AppTheme.dark,
-        home: Scaffold(
-          body: NoteEditor(
-            note: Note.parse(
-              '/vault/n.md',
-              '``` Java\n'
-                  '// comentario\n'
-                  'public class Hello {\n'
-                  '  int vezes = 42;\n'
-                  '  String oi = "Hello world!";\n'
-                  '}\n'
-                  '```\n',
-            ),
-            onSave: (_) async {},
-            onDirtyChanged: (_) {},
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    // O bloco e desenhado como texto selecionavel; aqui se le a cor de cada
-    // pedaço dele.
-    final cores = <String, Color?>{};
-    for (final selecionavel in tester.widgetList<SelectableText>(
-      find.byType(SelectableText),
-    )) {
-      final span = selecionavel.textSpan;
-      if (span == null || !span.toPlainText().contains('public class')) {
-        continue;
-      }
-      // A cor fica no span de cima e o texto no de baixo, entao a leitura tem
-      // que descer herdando — foi assim que o realce quase passou por
-      // desligado numa conferencia anterior.
-      void descer(TextSpan atual, Color? herdada) {
-        final cor = atual.style?.color ?? herdada;
-        if ((atual.text ?? '').trim().isNotEmpty) {
-          cores[atual.text!.trim()] = cor;
-        }
-        for (final filho in atual.children ?? const <InlineSpan>[]) {
-          if (filho is TextSpan) descer(filho, cor);
-        }
-      }
-
-      descer(span, null);
-    }
-
-    Color? corDe(String trecho) => cores.entries
-        .firstWhere(
-          (e) => e.key.contains(trecho),
-          orElse: () => const MapEntry('', null),
-        )
-        .value;
-
-    expect(corDe('public'), Darcula.palavraChave, reason: 'palavra reservada');
-    expect(corDe('comentario'), Darcula.comentario, reason: 'comentario');
-    expect(corDe('42'), Darcula.numero, reason: 'numero');
-    expect(corDe('Hello world!'), Darcula.literal, reason: 'texto entre aspas');
-  });
-
-  group('link interno no preview', () {
+  group('link interno no texto', () {
     Future<List<String>> montar(WidgetTester tester, String corpo) async {
       tester.view.physicalSize = const Size(1200, 800);
       tester.view.devicePixelRatio = 1.0;
@@ -1291,53 +1130,40 @@ void main() {
       return abertas;
     }
 
-    testWidgets('os colchetes somem do preview', (tester) async {
-      await montar(tester, 'Veja [[Plano de ensino]] hoje.\n');
-
-      // No preview le-se o nome da nota, e nao a sintaxe do link. Os `[[` do
-      // editor, do outro lado da tela, continuam onde estavam — dai a busca
-      // ser so aqui dentro.
-      expect(
-        find.descendant(
-          of: find.byType(MarkdownBody),
-          matching: find.textContaining('[['),
-        ),
-        findsNothing,
-      );
-
-      final desenhado = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
-      expect(
-        desenhado.data,
-        'Veja [Plano de ensino](wikilink:Plano%20de%20ensino) hoje.\n',
-      );
-    });
-
     testWidgets('clicar no link avisa qual nota abrir', (tester) async {
       final abertas = await montar(tester, 'Veja [[Plano de ensino]] hoje.\n');
 
-      // O texto do link, dentro do paragrafo renderizado.
-      await tester.tap(find.textContaining('Plano de ensino').last);
-      await tester.pumpAndSettle();
+      await tocarNoTexto(tester, textoDoCampo(tester).indexOf('ensino'));
 
-      // Titulo inteiro, com os espaços de volta — o destino vai codificado.
       expect(abertas, ['Plano de ensino']);
     });
 
     testWidgets('titulo com acento volta como foi escrito', (tester) async {
       final abertas = await montar(tester, 'Veja [[Educação a distância]].\n');
 
-      await tester.tap(find.textContaining('Educação a distância').last);
-      await tester.pumpAndSettle();
+      await tocarNoTexto(tester, textoDoCampo(tester).indexOf('distância'));
 
       expect(abertas, ['Educação a distância']);
     });
 
-    testWidgets('o editor continua mostrando os colchetes', (tester) async {
+    testWidgets('na linha que se escreve, clicar no link nao sai dela', (
+      tester,
+    ) async {
+      // Com o cursor ja na linha, os colchetes estao a mostra e o link e texto
+      // para editar: abrir a outra nota tiraria o usuario do meio da frase.
+      final abertas = await montar(tester, 'Veja [[Tutorial]] hoje.\n');
+
+      await tocarNoTexto(tester, textoDoCampo(tester).indexOf('hoje'));
+      await tocarNoTexto(tester, textoDoCampo(tester).indexOf('Tutorial') + 2);
+
+      expect(abertas, isEmpty);
+    });
+
+    testWidgets('o texto continua guardando os colchetes', (tester) async {
       await montar(tester, 'Veja [[Tutorial]].\n');
 
       // O `.md` e a fonte da verdade: o que sai de vista e so o desenho.
-      final campo = tester.widget<TextField>(find.byType(TextField).first);
-      expect(campo.controller!.text, contains('[[Tutorial]]'));
+      expect(textoDoCampo(tester), contains('[[Tutorial]]'));
     });
   });
 
@@ -1477,9 +1303,7 @@ void main() {
     });
   });
 
-  testWidgets('nota curta começa no topo do preview, nao no meio', (
-    tester,
-  ) async {
+  testWidgets('nota curta começa no topo, nao no meio', (tester) async {
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
@@ -1500,80 +1324,10 @@ void main() {
     // Centralizado no eixo vertical, este texto nasceria perto de y=400 numa
     // janela de 800. Encostado no topo, ele fica logo abaixo da barra e da
     // ficha de propriedades, que ocupa uma altura fixa acima do texto.
-    expect(tester.getRect(find.byType(MarkdownBody)).top, lessThan(320));
+    expect(tester.getRect(find.byType(TextField).first).top, lessThan(320));
   });
 
-  testWidgets('titulos e negrito tem azul proprio, diferente do link', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(1200, 800);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.reset);
-
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: AppTheme.dark,
-        home: Scaffold(
-          body: NoteEditor(
-            note: Note.parse('/vault/n.md', '# Titulo\n\nUm **negrito**.\n'),
-            onSave: (_) async {},
-            onDirtyChanged: (_) {},
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    final estilo = tester
-        .widget<MarkdownBody>(find.byType(MarkdownBody))
-        .styleSheet!;
-    final indigoDoApp = AppTheme.dark.colorScheme.primary;
-
-    // Os seis niveis, para uma nota mais funda nao perder o realce no meio.
-    final niveis = [
-      estilo.h1,
-      estilo.h2,
-      estilo.h3,
-      estilo.h4,
-      estilo.h5,
-      estilo.h6,
-    ];
-
-    // Titulo vai escurecendo de h1 a h6 — a cor acompanha a mesma hierarquia
-    // que o tamanho da fonte, para reforça-la mesmo quando o tamanho sozinho
-    // ja nao ajuda a distinguir um nivel do outro.
-    for (var i = 0; i < niveis.length - 1; i++) {
-      expect(
-        niveis[i]!.color!.computeLuminance(),
-        lessThan(niveis[i + 1]!.color!.computeLuminance()),
-      );
-    }
-
-    // Nenhum nivel pode sair na cor de link, porque link e clicavel e titulo
-    // nao.
-    for (final t in niveis) {
-      expect(t?.color, isNot(indigoDoApp));
-    }
-    expect(estilo.a?.color, indigoDoApp);
-
-    // Negrito tem peso reforçado e cor propria, fora da escala azul dos
-    // titulos e fora da cor de link — e o que voce mesmo destacou no texto,
-    // nao a estrutura da nota.
-    expect(estilo.strong?.fontWeight, FontWeight.w700);
-    expect(estilo.strong?.color, isNot(indigoDoApp));
-    for (final t in niveis) {
-      expect(estilo.strong?.color, isNot(t?.color));
-    }
-
-    // O texto corrido nao vai junto com nenhum dos dois: se tudo fosse
-    // colorido, nada seria destaque.
-    for (final t in niveis) {
-      expect(estilo.p?.color, isNot(t?.color));
-    }
-    expect(estilo.p?.color, isNot(estilo.strong?.color));
-  });
-
-  testWidgets('trocar de nota volta o preview para o topo', (tester) async {
+  testWidgets('trocar de nota volta ao topo', (tester) async {
     tester.view.physicalSize = const Size(1000, 600);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
@@ -1595,12 +1349,12 @@ void main() {
     await abrir('/vault/a.md', longa);
     await tester.pumpAndSettle();
 
-    final preview = find.byType(SingleChildScrollView).first;
-    await tester.drag(preview, const Offset(0, -400));
+    final rolagem = find.byType(SingleChildScrollView).first;
+    await tester.drag(rolagem, const Offset(0, -400));
     await tester.pumpAndSettle();
 
     double posicao() =>
-        tester.widget<SingleChildScrollView>(preview).controller!.offset;
+        tester.widget<SingleChildScrollView>(rolagem).controller!.offset;
     expect(posicao(), greaterThan(0));
 
     await abrir('/vault/b.md', longa);
@@ -1639,7 +1393,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(gravado, 'LLM →');
-      // E o preview mostra a seta, e nao os dois sinais.
+      // E a tela mostra a seta, e nao os dois sinais.
       expect(find.textContaining('LLM →', findRichText: true), findsWidgets);
     });
 
@@ -1671,6 +1425,207 @@ void main() {
 
       expect(gravado, contains('int f() ->'));
     });
+  });
+
+  group('balao de codigo', () {
+    Future<ValueGetter<String>> montar(
+      WidgetTester tester,
+      String corpo,
+    ) async {
+      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      var gravado = corpo;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.dark,
+          home: Scaffold(
+            body: NoteEditor(
+              note: Note.parse('/vault/n.md', corpo),
+              onSave: (texto) async => gravado = texto,
+              onDirtyChanged: (_) {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return () => gravado;
+    }
+
+    Future<void> gravar(WidgetTester tester) async {
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+    }
+
+    /// O campo do codigo dentro do balao — o que nao e o da linguagem.
+    Finder campoDoCodigo() => find.descendant(
+      of: find.byType(CodigoEditavel),
+      matching: find.byWidgetPredicate(
+        (w) => w is TextField && w.key != const ValueKey('codigo-linguagem'),
+      ),
+    );
+
+    testWidgets('o bloco sai em balao, com a linguagem em cima', (
+      tester,
+    ) async {
+      await montar(tester, 'Antes\n\n```Python\nprint("oi")\n```\n\nDepois');
+
+      expect(find.byType(CodigoEditavel), findsOneWidget);
+      final linguagem = tester.widget<TextField>(
+        find.byKey(const ValueKey('codigo-linguagem')),
+      );
+      expect(linguagem.controller!.text, 'Python');
+      expect(
+        tester.widget<TextField>(campoDoCodigo()).controller!.text,
+        'print("oi")',
+      );
+      // As cercas nao aparecem em campo nenhum: viraram a moldura do balao.
+      for (final campo in tester.widgetList<TextField>(
+        find.byType(TextField),
+      )) {
+        expect(campo.controller?.text ?? '', isNot(contains('```')));
+      }
+    });
+
+    testWidgets('terminal sai como janela de terminal, sem cores de codigo', (
+      tester,
+    ) async {
+      await montar(
+        tester,
+        '```python\nprint(1/0)\n```\n\n```terminal\nZeroDivisionError\n```\n',
+      );
+
+      expect(find.byKey(const ValueKey('codigo-terminal')), findsOneWidget);
+      expect(find.byKey(const ValueKey('codigo-balao')), findsOneWidget);
+
+      // A saida e texto de uma cor so: nada ali e palavra reservada.
+      final campo = tester.widget<TextField>(campoDoCodigo().last);
+      final span = campo.controller!.buildTextSpan(
+        context: tester.element(campoDoCodigo().last),
+        style: campo.style,
+        withComposing: false,
+      );
+      expect(span.children, isNull);
+      expect(span.text, 'ZeroDivisionError');
+    });
+
+    testWidgets('bash continua sendo codigo colorido', (tester) async {
+      await montar(tester, '```bash\necho oi\n```\n');
+      expect(find.byKey(const ValueKey('codigo-terminal')), findsNothing);
+    });
+
+    testWidgets('escrever no balao grava o codigo no arquivo', (tester) async {
+      final gravado = await montar(tester, '```py\nx = 1\n```\n');
+
+      await tester.enterText(campoDoCodigo(), 'x = 2');
+      await gravar(tester);
+
+      expect(gravado(), '```py\nx = 2\n```\n');
+    });
+
+    testWidgets('trocar a linguagem reescreve a cerca de cima', (tester) async {
+      final gravado = await montar(tester, '```py\nx = 1\n```\n');
+
+      await tester.enterText(
+        find.byKey(const ValueKey('codigo-linguagem')),
+        'java',
+      );
+      await gravar(tester);
+
+      expect(gravado(), '```java\nx = 1\n```\n');
+    });
+
+    testWidgets('Enter depois de ``` e da linguagem abre o balao', (
+      tester,
+    ) async {
+      final gravado = await montar(tester, 'Oi\n');
+
+      final texto = find.byType(TextField).first;
+      await tester.enterText(texto, 'Oi\n```python');
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(CodigoEditavel), findsOneWidget);
+      // O cursor vai direto para dentro do balao, pronto para o codigo.
+      tester.testTextInput.enterText('a = 1');
+      await tester.pumpAndSettle();
+      await gravar(tester);
+
+      expect(gravado(), 'Oi\n```python\na = 1\n```');
+    });
+
+    testWidgets('aspas duplas seguidas saem as duas', (tester) async {
+      // Tecla morta: sem a interceptaçao, a segunda aspa se juntava com a
+      // primeira num `¨` so.
+      final gravado = await montar(tester, '```py\nprint(\n```\n');
+
+      final campo = campoDoCodigo();
+      await tester.tap(campo);
+      await tester.pumpAndSettle();
+      final controlador = tester.widget<TextField>(campo).controller!;
+      controlador.selection = TextSelection.collapsed(
+        offset: controlador.text.length,
+      );
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      for (var i = 0; i < 2; i++) {
+        await tester.sendKeyEvent(
+          LogicalKeyboardKey.quote,
+          physicalKey: PhysicalKeyboardKey.quote,
+        );
+      }
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pumpAndSettle();
+      await gravar(tester);
+
+      expect(gravado(), '```py\nprint(""\n```\n');
+    });
+
+    testWidgets('Enter mantem o recuo e recua depois de dois-pontos', (
+      tester,
+    ) async {
+      final gravado = await montar(tester, '```py\nif x:\n```\n');
+
+      final campo = campoDoCodigo();
+      await tester.tap(campo);
+      await tester.pumpAndSettle();
+      final controlador = tester.widget<TextField>(campo).controller!;
+      controlador.selection = TextSelection.collapsed(
+        offset: controlador.text.length,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      await gravar(tester);
+
+      expect(gravado(), '```py\nif x:\n    \n```\n');
+    });
+
+    testWidgets('excluir tira o bloco da nota', (tester) async {
+      final gravado = await montar(tester, 'Antes\n\n```py\nx\n```\n\nDepois');
+
+      await tester.tap(find.byKey(const ValueKey('codigo-excluir')));
+      await tester.pumpAndSettle();
+      await gravar(tester);
+
+      expect(find.byType(CodigoEditavel), findsNothing);
+      expect(gravado(), 'Antes\n\nDepois');
+    });
+
+    testWidgets('o menu oferece inserir codigo', (tester) async {
+      await montar(tester, '');
+      await tester.tap(
+        find.byType(TextField).first,
+        buttons: kSecondaryMouseButton,
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Inserir codigo'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(CodigoEditavel), findsOneWidget);
+    }, variant: TargetPlatformVariant.desktop());
   });
 
   group('quadro', () {
@@ -1731,8 +1686,7 @@ void main() {
     ) async {
       await montar(tester, 'Antes\n\n$desenhado\n\nDepois');
 
-      // Um cartao de cada lado da tela: o do editor e o do preview.
-      expect(find.byType(QuadroNoTexto), findsNWidgets(2));
+      expect(find.byType(QuadroNoTexto), findsOneWidget);
       // Nenhum campo de texto mostra as coordenadas: elas estao no arquivo, e
       // nao na tela.
       for (final campo in tester.widgetList<TextField>(
