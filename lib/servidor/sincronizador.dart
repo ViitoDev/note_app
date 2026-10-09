@@ -116,7 +116,11 @@ class Sincronizador {
       ))
         item.caminho: item,
     };
-    final estado = await _lerEstado();
+    final (estado, pastasDoEstado) = await _lerEstado();
+
+    // Pasta que ja esteve dos dois lados. Estados antigos nao anotavam pastas,
+    // so notas: as pastas dessas notas valem como conhecidas tambem.
+    final conhecidas = {...pastasDoEstado, ...estado.keys.expand(_ancestrais)};
 
     final enviados = <String>[];
     final baixados = <String>[];
@@ -125,7 +129,7 @@ class Sincronizador {
     final conflitos = <String>[];
     final novoEstado = <String, _Marca>{};
 
-    await _espelharPastas(locais, remotos);
+    await _espelharPastas(locais, remotos, estado, conhecidas);
 
     final caminhos = <String>{
       ...locais.keys.where((c) => !locais[c]!.ehPasta),
@@ -203,8 +207,13 @@ class Sincronizador {
       conflitos.add(copia);
     }
 
-    await _limparPastasVazias(locais, remotos, estado, novoEstado);
-    await _gravarEstado(novoEstado);
+    final pastas = await _reconciliarPastas(
+      locais,
+      remotos,
+      conhecidas,
+      novoEstado,
+    );
+    await _gravarEstado(novoEstado, pastas);
 
     return ResultadoDaSync(
       enviados: enviados,
@@ -233,7 +242,7 @@ class Sincronizador {
     final arquivo = File(_absoluto(relativo));
     if (!arquivo.existsSync()) return false;
 
-    final estado = await _lerEstado();
+    final (estado, pastas) = await _lerEstado();
     final marca = estado[relativo];
     // Sem marca a nota e nova para esta sincronizacao, e pode ja existir no
     // servidor com outro texto. A rodada completa resolve; esta nao.
@@ -252,7 +261,7 @@ class Sincronizador {
       local: _milis((await arquivo.stat()).modified),
       remoto: _milis(_acharem(depois, relativo)?.modificadoEm),
     );
-    await _gravarEstado(estado);
+    await _gravarEstado(estado, pastas);
     return true;
   }
 
@@ -307,65 +316,123 @@ class Sincronizador {
     );
   }
 
-  /// Cria de cada lado as pastas que existem so do outro.
+  /// Cria de cada lado as pastas novas que existem so do outro.
+  ///
+  /// Pasta *conhecida* que falta de um lado foi apagada la, e recria-la aqui
+  /// era o defeito de a pasta excluida voltar sempre. Ela so e recriada se o
+  /// lado que ainda a tem guardou dentro dela uma nota nova, que precisa de
+  /// onde morar. O resto das pastas apagadas e decidido em
+  /// [_reconciliarPastas], depois das notas.
   ///
   /// Da mais rasa para a mais funda: criar `a/b` antes de `a` faria o servidor
   /// responder 409.
   Future<void> _espelharPastas(
     Map<String, _Local> locais,
     Map<String, ItemRemoto> remotos,
+    Map<String, _Marca> estado,
+    Set<String> conhecidas,
   ) async {
-    int porProfundidade(String a, String b) =>
-        a.split('/').length.compareTo(b.split('/').length);
+    bool temNotaNova(Iterable<String> arquivos, String pasta) =>
+        arquivos.any((c) => c.startsWith('$pasta/') && !estado.containsKey(c));
+    final arquivosLocais = locais.keys.where((c) => !locais[c]!.ehPasta);
+    final arquivosRemotos = remotos.keys.where((c) => !remotos[c]!.ehPasta);
 
     final soLocais =
         locais.keys
             .where((c) => locais[c]!.ehPasta && !remotos.containsKey(c))
+            .where(
+              (c) => !conhecidas.contains(c) || temNotaNova(arquivosLocais, c),
+            )
             .toList()
-          ..sort(porProfundidade);
+          ..sort(_porProfundidade);
     for (final caminho in soLocais) {
       await cliente.criarPasta(caminho);
+      remotos[caminho] = ItemRemoto(caminho: caminho, ehPasta: true);
     }
 
     final soRemotas =
         remotos.keys
             .where((c) => remotos[c]!.ehPasta && !locais.containsKey(c))
+            .where(
+              (c) => !conhecidas.contains(c) || temNotaNova(arquivosRemotos, c),
+            )
             .toList()
-          ..sort(porProfundidade);
+          ..sort(_porProfundidade);
     for (final caminho in soRemotas) {
       await Directory(_absoluto(caminho)).create(recursive: true);
+      locais[caminho] = _Local(caminho: caminho, ehPasta: true);
     }
   }
 
-  /// Tira do caminho as pastas que ficaram vazias dos dois lados depois das
-  /// exclusoes. So pasta vazia, e so se ela ja tinha sido sincronizada antes:
-  /// apagar uma pasta com conteudo dentro nunca e decisao desta classe.
-  Future<void> _limparPastasVazias(
+  /// Leva para o outro lado a exclusao das pastas conhecidas que sumiram de
+  /// um lado so, e devolve as pastas que ficaram nos dois.
+  ///
+  /// Roda depois das notas: so entao se sabe se sobrou alguma nota viva dentro
+  /// da pasta. Se sobrou, a pasta fica; se nao, sai do outro lado tambem.
+  /// No disco, so sai pasta sem nenhum arquivo dentro — imagem, anexo ou
+  /// qualquer coisa que a sincronizacao nao carrega nunca e apagada por ela.
+  Future<Set<String>> _reconciliarPastas(
     Map<String, _Local> locais,
     Map<String, ItemRemoto> remotos,
-    Map<String, _Marca> estado,
+    Set<String> conhecidas,
     Map<String, _Marca> novoEstado,
   ) async {
-    final conhecidas = estado.keys.map(_pai).where((c) => c.isNotEmpty).toSet();
     final vivos = novoEstado.keys.toSet();
+    bool temConteudo(String pasta) => vivos.any((c) => c.startsWith('$pasta/'));
 
-    bool temConteudo(String pasta) =>
-        vivos.any((c) => c == pasta || c.startsWith('$pasta/'));
+    final pastas = {
+      ...locais.keys.where((c) => locais[c]!.ehPasta),
+      ...remotos.keys.where((c) => remotos[c]!.ehPasta),
+    };
 
     // Da mais funda para a mais rasa, senao a pasta de cima ainda conteria a
     // de baixo na hora de decidir.
-    final candidatas = conhecidas.toList()
-      ..sort((a, b) => b.split('/').length.compareTo(a.split('/').length));
+    final candidatas =
+        conhecidas
+            .where((c) => locais.containsKey(c) != remotos.containsKey(c))
+            .toList()
+          ..sort((a, b) => _porProfundidade(b, a));
 
     for (final pasta in candidatas) {
       if (temConteudo(pasta)) continue;
 
-      if (!locais.containsKey(pasta) && remotos.containsKey(pasta)) {
+      if (remotos.containsKey(pasta)) {
         await cliente.apagar(pasta, pasta: true);
-      } else if (locais.containsKey(pasta) && !remotos.containsKey(pasta)) {
+        pastas.remove(pasta);
+      } else {
         final dir = Directory(_absoluto(pasta));
-        if (dir.existsSync() && dir.listSync().isEmpty) await dir.delete();
+        if (!dir.existsSync()) {
+          pastas.remove(pasta);
+        } else if (_semArquivos(dir)) {
+          await dir.delete(recursive: true);
+          pastas.remove(pasta);
+        }
       }
+    }
+
+    // A pasta tambem some do estado se uma pasta de cima saiu.
+    pastas.removeWhere(
+      (c) => _ancestrais(c).any((a) => a != c && !pastas.contains(a)),
+    );
+    return pastas;
+  }
+
+  static bool _semArquivos(Directory dir) {
+    try {
+      return dir.listSync(recursive: true).every((e) => e is Directory);
+    } on FileSystemException {
+      return false;
+    }
+  }
+
+  static int _porProfundidade(String a, String b) =>
+      a.split('/').length.compareTo(b.split('/').length);
+
+  /// As pastas que contem [caminho], da raiz para dentro, sem o proprio.
+  static Iterable<String> _ancestrais(String caminho) sync* {
+    final partes = caminho.split('/');
+    for (var i = 1; i < partes.length; i++) {
+      yield partes.take(i).join('/');
     }
   }
 
@@ -454,35 +521,49 @@ class Sincronizador {
     return encontrados;
   }
 
-  Future<Map<String, _Marca>> _lerEstado() async {
+  /// As marcas de cada nota e as pastas que estavam dos dois lados na ultima
+  /// rodada.
+  Future<(Map<String, _Marca>, Set<String>)> _lerEstado() async {
+    const vazio = (<String, _Marca>{}, <String>{});
     final arquivo = File(p.join(raiz, arquivoDeEstado));
-    if (!arquivo.existsSync()) return {};
+    if (!arquivo.existsSync()) return vazio;
 
     try {
       final bruto = jsonDecode(await arquivo.readAsString());
-      if (bruto is! Map) return {};
+      if (bruto is! Map) return vazio;
       final itens = bruto['itens'];
-      if (itens is! Map) return {};
+      if (itens is! Map) return vazio;
+      final pastas = bruto['pastas'];
 
-      return {
-        for (final entrada in itens.entries)
-          if (entrada.key is String && entrada.value is Map)
-            entrada.key as String: _Marca(
-              local: _inteiro((entrada.value as Map)['local']),
-              remoto: _inteiro((entrada.value as Map)['remoto']),
-            ),
-      };
+      return (
+        {
+          for (final entrada in itens.entries)
+            if (entrada.key is String && entrada.value is Map)
+              entrada.key as String: _Marca(
+                local: _inteiro((entrada.value as Map)['local']),
+                remoto: _inteiro((entrada.value as Map)['remoto']),
+              ),
+        },
+        {
+          if (pastas is List)
+            for (final pasta in pastas)
+              if (pasta is String) pasta,
+        },
+      );
     } on FormatException {
       // Estado corrompido nao pode travar o app. Sem ele tudo parece novo, e
       // a comparacao de conteudo do caso de conflito segura o estrago: nota
       // igual dos dois lados so volta para o estado, sem copia nenhuma.
-      return {};
+      return vazio;
     } on FileSystemException {
-      return {};
+      return vazio;
     }
   }
 
-  Future<void> _gravarEstado(Map<String, _Marca> estado) async {
+  Future<void> _gravarEstado(
+    Map<String, _Marca> estado,
+    Set<String> pastas,
+  ) async {
     final arquivo = File(p.join(raiz, arquivoDeEstado));
     final json = jsonEncode({
       'versao': 1,
@@ -493,6 +574,7 @@ class Sincronizador {
             'remoto': entrada.value.remoto,
           },
       },
+      'pastas': pastas.toList()..sort(),
     });
 
     try {

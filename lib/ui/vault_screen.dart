@@ -1360,6 +1360,9 @@ class _VaultScreenState extends State<VaultScreen> {
         });
       }
       await _refreshTree();
+      // Leva a exclusao para o servidor logo, antes que outra maquina
+      // sincronize e ainda veja a pasta ou a nota la.
+      if (_servidor.configurado) unawaited(_sincronizar());
     } on FileSystemException catch (e) {
       _snack('Nao foi possivel excluir: ${e.message}');
     }

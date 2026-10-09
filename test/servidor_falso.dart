@@ -150,7 +150,14 @@ class ServidorFalso {
       datas.remove(caminho);
       return http.Response('', 204);
     }
-    if (pastas.remove(caminho)) return http.Response('', 204);
+    // Como no WebDAV de verdade, apagar a pasta leva tudo que esta dentro.
+    if (pastas.remove(caminho)) {
+      bool dentro(String c) => c.startsWith('$caminho/');
+      pastas.removeWhere(dentro);
+      arquivos.removeWhere((c, _) => dentro(c));
+      datas.removeWhere((c, _) => dentro(c));
+      return http.Response('', 204);
+    }
     return http.Response('', 404);
   }
 }

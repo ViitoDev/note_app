@@ -431,5 +431,78 @@ void main() {
       expect(servidor.pastas, isEmpty);
       expect(servidor.arquivos, isEmpty);
     });
+
+    test('pasta vazia apagada aqui nao volta do servidor', () async {
+      await Directory(p.join(vault.path, 'Módulo 4')).create();
+      await sincronizador().sincronizar();
+      expect(servidor.pastas, contains('Módulo 4'));
+
+      await Directory(p.join(vault.path, 'Módulo 4')).delete();
+      await sincronizador().sincronizar();
+      await sincronizador().sincronizar();
+
+      expect(Directory(p.join(vault.path, 'Módulo 4')).existsSync(), isFalse);
+      expect(servidor.pastas, isNot(contains('Módulo 4')));
+    });
+
+    test('pasta com notas apagada aqui nao volta do servidor', () async {
+      await escrever('estudo/modulo/aula.md', '# a\n');
+      await escrever('estudo/fica.md', '# b\n');
+      await sincronizador().sincronizar();
+
+      await Directory(
+        p.join(vault.path, 'estudo', 'modulo'),
+      ).delete(recursive: true);
+      await sincronizador().sincronizar();
+      await sincronizador().sincronizar();
+
+      expect(
+        Directory(p.join(vault.path, 'estudo', 'modulo')).existsSync(),
+        isFalse,
+      );
+      expect(servidor.pastas, ['estudo']);
+      expect(servidor.arquivos.keys, ['estudo/fica.md']);
+    });
+
+    test('pasta vazia apagada no servidor sai daqui tambem', () async {
+      await Directory(p.join(vault.path, 'velha')).create();
+      await sincronizador().sincronizar();
+
+      servidor.pastas.remove('velha');
+      await sincronizador().sincronizar();
+      await sincronizador().sincronizar();
+
+      expect(Directory(p.join(vault.path, 'velha')).existsSync(), isFalse);
+      expect(servidor.pastas, isEmpty);
+    });
+
+    test('pasta apagada no servidor fica se ganhou nota nova aqui', () async {
+      await Directory(p.join(vault.path, 'projeto')).create();
+      await sincronizador().sincronizar();
+
+      servidor.pastas.remove('projeto');
+      await escrever('projeto/nova.md', '# nova\n');
+      final r = await sincronizador().sincronizar();
+
+      expect(r.enviados, ['projeto/nova.md']);
+      expect(servidor.arquivos['projeto/nova.md'], '# nova\n');
+    });
+
+    test(
+      'pasta apagada no servidor nao leva arquivo que nao sincroniza',
+      () async {
+        await Directory(p.join(vault.path, 'fotos')).create();
+        await sincronizador().sincronizar();
+
+        await File(p.join(vault.path, 'fotos', 'foto.png')).writeAsString('x');
+        servidor.pastas.remove('fotos');
+        await sincronizador().sincronizar();
+
+        expect(
+          File(p.join(vault.path, 'fotos', 'foto.png')).existsSync(),
+          isTrue,
+        );
+      },
+    );
   });
 }
