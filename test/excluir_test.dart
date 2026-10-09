@@ -221,7 +221,8 @@ void main() {
     testWidgets('a raiz do vault nao oferece exclusao', (tester) async {
       await _montar(tester, _VaultFalso());
 
-      await _botaoDireito(tester, 'VAULT');
+      // O cabeçalho da arvore mostra o nome da pasta do vault.
+      await _botaoDireito(tester, 'vault');
 
       expect(find.text('Excluir'), findsNothing);
     });

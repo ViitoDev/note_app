@@ -288,7 +288,14 @@ void main() {
       // O campo ja vem com o nome atual, sem a extensao.
       expect(find.widgetWithText(TextField, 'Solta'), findsOneWidget);
 
-      await tester.enterText(find.byType(TextField), 'Renomeada');
+      // A arvore tem o campo de filtro: o alvo e o campo do dialogo.
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.byType(TextField),
+        ),
+        'Renomeada',
+      );
       await tester.tap(find.text('Renomear').last);
       await tester.pumpAndSettle();
 
@@ -317,7 +324,14 @@ void main() {
       await tester.tap(find.text('Renomear'));
       await tester.pumpAndSettle();
 
-      await tester.enterText(find.byType(TextField), 'Faculdade');
+      // A arvore tem o campo de filtro: o alvo e o campo do dialogo.
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.byType(TextField),
+        ),
+        'Faculdade',
+      );
       await tester.tap(find.text('Renomear').last);
       await tester.pumpAndSettle();
 

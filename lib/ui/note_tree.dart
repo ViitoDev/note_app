@@ -29,6 +29,7 @@ class _Acoes {
     required this.onDelete,
     required this.onRenomear,
     required this.onMover,
+    this.filtro = '',
   });
 
   final String? selectedId;
@@ -38,10 +39,15 @@ class _Acoes {
   final ValueChanged<VaultEntry> onDelete;
   final ValueChanged<VaultEntry> onRenomear;
   final MoverEntrada onMover;
+
+  /// Texto do campo de filtro, ja em minusculas e sem acento. Vazio quando nao ha filtro.
+  final String filtro;
+
+  bool get filtrando => filtro.isNotEmpty;
 }
 
 /// Arvore de pastas e notas do vault, no estilo da barra lateral do Obsidian.
-class NoteTree extends StatelessWidget {
+class NoteTree extends StatefulWidget {
   const NoteTree({
     super.key,
     required this.root,
@@ -72,21 +78,53 @@ class NoteTree extends StatelessWidget {
   final MoverEntrada onMover;
 
   @override
+  State<NoteTree> createState() => _NoteTreeState();
+}
+
+class _NoteTreeState extends State<NoteTree> {
+  final _filtro = TextEditingController();
+
+  /// Muda a cada "recolher pastas". Entra na chave das linhas de cima, entao
+  /// cada pasta nasce de novo e volta ao estado inicial: fechada, a menos que
+  /// guarde a nota aberta.
+  int _geracao = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _filtro.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _filtro.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final root = widget.root;
+    final filtro = _semAcento(_filtro.text.trim());
     final acoes = _Acoes(
-      selectedId: selectedId,
-      onFileTap: onFileTap,
-      onNewNoteInFolder: onNewNoteInFolder,
-      onNewFolderIn: onNewFolderIn,
-      onDelete: onDelete,
-      onRenomear: onRenomear,
-      onMover: onMover,
+      selectedId: widget.selectedId,
+      onFileTap: widget.onFileTap,
+      onNewNoteInFolder: widget.onNewNoteInFolder,
+      onNewFolderIn: widget.onNewFolderIn,
+      onDelete: widget.onDelete,
+      onRenomear: widget.onRenomear,
+      onMover: widget.onMover,
+      filtro: filtro,
     );
+    final visivel = filtro.isEmpty ? root : _filtrar(root, filtro);
 
     return Column(
       children: [
-        _RootTile(root: root, acoes: acoes),
-        const Divider(height: 1),
+        _RootTile(
+          root: root,
+          acoes: acoes,
+          onRecolher: () => setState(() => _geracao++),
+        ),
+        if (!root.isEmpty) _CampoDeFiltro(controller: _filtro),
         Expanded(
           // O vazio embaixo da ultima linha tambem recebe: e como se tira algo
           // de dentro de uma pasta sem ter outra linha da raiz para mirar.
@@ -95,11 +133,25 @@ class NoteTree extends StatelessWidget {
             acoes: acoes,
             child: root.isEmpty
                 ? const _EmptyVaultHint()
+                : visivel == null
+                ? _SemResultado(filtro: _filtro.text.trim())
                 : ListView(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    padding: const EdgeInsets.only(
+                      top: AppTheme.gapXs,
+                      bottom: AppTheme.gapXl,
+                    ),
                     children: [
-                      for (final child in root.children)
-                        _entryTile(child, root, acoes, 0),
+                      for (final child in visivel.children)
+                        KeyedSubtree(
+                          key: ValueKey('$_geracao:${child.id}'),
+                          child: _entryTile(
+                            child,
+                            visivel,
+                            acoes,
+                            0,
+                            child is VaultFolder ? _corDoGrupo(child) : null,
+                          ),
+                        ),
                     ],
                   ),
           ),
@@ -109,7 +161,83 @@ class NoteTree extends StatelessWidget {
   }
 }
 
-Widget _entryTile(VaultEntry entry, VaultFolder pai, _Acoes acoes, int depth) {
+/// A arvore so com o que bate com [filtro], ou nulo se nada bater.
+///
+/// Pasta cujo nome bate entra inteira; as outras ficam so se guardarem algo
+/// que bate. Assim o caminho ate cada resultado continua na tela, que e o que
+/// diz *onde* a nota mora.
+VaultFolder? _filtrar(VaultFolder pasta, String filtro) {
+  final filhos = <VaultEntry>[];
+  for (final filho in pasta.children) {
+    switch (filho) {
+      case VaultFolder():
+        if (_semAcento(filho.name).contains(filtro)) {
+          filhos.add(filho);
+        } else {
+          final dentro = _filtrar(filho, filtro);
+          if (dentro != null) filhos.add(dentro);
+        }
+      case VaultFile():
+        if (_semAcento(filho.title).contains(filtro)) filhos.add(filho);
+    }
+  }
+  if (filhos.isEmpty) return null;
+  return VaultFolder(id: pasta.id, name: pasta.name, children: filhos);
+}
+
+/// Minusculas e sem acento, letra por letra.
+///
+/// "modulo" tem que achar "Módulo": ninguem digita acento num filtro. A troca
+/// e de um caractere por um, entao o indice achado no texto limpo vale no
+/// original — e o que deixa destacar o trecho certo.
+String _semAcento(String texto) {
+  const de = 'áàâãäéèêëíìîïóòôõöúùûüçñ';
+  const para = 'aaaaaeeeeiiiiooooouuuucn';
+  final buffer = StringBuffer();
+  for (final c in texto.toLowerCase().split('')) {
+    final i = de.indexOf(c);
+    buffer.write(i < 0 ? c : para[i]);
+  }
+  return buffer.toString();
+}
+
+/// Cores das pastas de primeiro nivel.
+///
+/// Cada pasta da raiz ganha uma, e tudo dentro dela herda: o icone, o trilho.
+/// Numa arvore funda e o que diz de relance "isto e de Estudos" sem subir o
+/// olho ate o topo. Tons apagados, para nao brigar com o texto, e longe do
+/// rosa das tags e do azul dos titulos.
+const _coresDosGrupos = [
+  Color(0xFF8AA2FF), // indigo
+  Color(0xFF6CC5A8), // verde
+  Color(0xFFE2B36B), // ambar
+  Color(0xFFC497F0), // lilas
+  Color(0xFFE58F6D), // laranja
+  Color(0xFF8CC4D4), // ciano
+];
+
+/// A cor sai do nome, e nao da posiçao: reordenar a arvore nao repinta tudo.
+Color _corDoGrupo(VaultFolder pasta) {
+  var h = 0;
+  for (final c in pasta.name.codeUnits) {
+    h = (h * 31 + c) & 0x7fffffff;
+  }
+  return _coresDosGrupos[h % _coresDosGrupos.length];
+}
+
+int _contarPastas(VaultFolder pasta) => pasta.children.fold(
+  0,
+  (total, filho) =>
+      total + (filho is VaultFolder ? 1 + _contarPastas(filho) : 0),
+);
+
+Widget _entryTile(
+  VaultEntry entry,
+  VaultFolder pai,
+  _Acoes acoes,
+  int depth,
+  Color? cor,
+) {
   final naTrilha = _naTrilha(entry, acoes.selectedId);
   return switch (entry) {
     VaultFolder() => _FolderTile(
@@ -118,6 +246,7 @@ Widget _entryTile(VaultEntry entry, VaultFolder pai, _Acoes acoes, int depth) {
       depth: depth,
       acoes: acoes,
       naTrilha: naTrilha,
+      cor: cor,
     ),
     VaultFile() => _FileTile(
       file: entry,
@@ -125,8 +254,136 @@ Widget _entryTile(VaultEntry entry, VaultFolder pai, _Acoes acoes, int depth) {
       depth: depth,
       acoes: acoes,
       naTrilha: naTrilha,
+      cor: cor,
     ),
   };
+}
+
+/// O nome com o trecho que bate com o filtro destacado.
+class _Nome extends StatelessWidget {
+  const _Nome({required this.texto, required this.filtro, this.style});
+
+  final String texto;
+  final String filtro;
+  final TextStyle? style;
+
+  @override
+  Widget build(BuildContext context) {
+    final i = filtro.isEmpty ? -1 : _semAcento(texto).indexOf(filtro);
+    final Widget nome;
+    if (i < 0) {
+      nome = Text(texto, style: style, overflow: TextOverflow.ellipsis);
+    } else {
+      final scheme = Theme.of(context).colorScheme;
+      nome = Text.rich(
+        TextSpan(
+          children: [
+            TextSpan(text: texto.substring(0, i)),
+            TextSpan(
+              text: texto.substring(i, i + filtro.length),
+              style: TextStyle(
+                color: scheme.primary,
+                fontWeight: FontWeight.w700,
+                backgroundColor: scheme.primary.withValues(alpha: 0.12),
+              ),
+            ),
+            TextSpan(text: texto.substring(i + filtro.length)),
+          ],
+        ),
+        style: style,
+        overflow: TextOverflow.ellipsis,
+      );
+    }
+    return Tooltip(
+      message: texto,
+      waitDuration: const Duration(milliseconds: 600),
+      child: nome,
+    );
+  }
+}
+
+/// Campo para achar uma nota pelo nome sem abrir pasta por pasta.
+class _CampoDeFiltro extends StatelessWidget {
+  const _CampoDeFiltro({required this.controller});
+
+  final TextEditingController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppTheme.gapSm,
+        0,
+        AppTheme.gapSm,
+        AppTheme.gapSm,
+      ),
+      child: SizedBox(
+        height: 32,
+        child: TextField(
+          controller: controller,
+          style: theme.textTheme.bodySmall?.copyWith(color: scheme.onSurface),
+          textAlignVertical: TextAlignVertical.center,
+          decoration: InputDecoration(
+            isDense: true,
+            filled: true,
+            fillColor: scheme.surfaceContainerHigh,
+            hintText: 'Filtrar notas e pastas',
+            hintStyle: theme.textTheme.bodySmall,
+            contentPadding: EdgeInsets.zero,
+            prefixIcon: Icon(
+              Icons.search,
+              size: 16,
+              color: scheme.onSurfaceVariant,
+            ),
+            prefixIconConstraints: const BoxConstraints(minWidth: 32),
+            suffixIcon: controller.text.isEmpty
+                ? null
+                : IconButton(
+                    icon: const Icon(Icons.close, size: 14),
+                    tooltip: 'Limpar filtro',
+                    padding: EdgeInsets.zero,
+                    onPressed: controller.clear,
+                  ),
+            suffixIconConstraints: const BoxConstraints.tightFor(
+              width: 32,
+              height: 32,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(AppTheme.radiusSm),
+              borderSide: BorderSide.none,
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(AppTheme.radiusSm),
+              borderSide: BorderSide(
+                color: scheme.primary.withValues(alpha: 0.6),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SemResultado extends StatelessWidget {
+  const _SemResultado({required this.filtro});
+
+  final String filtro;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(AppTheme.gapXl),
+      child: Text(
+        'Nada com "$filtro" no nome.',
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.bodySmall,
+      ),
+    );
+  }
 }
 
 /// Esta linha esta no caminho ate a nota aberta?
@@ -172,15 +429,20 @@ class _Trilhos extends CustomPainter {
       // o galho inteiro que leva ate a nota aberta.
       final aceso = naTrilha && nivel == depth - 1;
       tinta.color = aceso ? corAtiva : cor;
+      tinta.strokeWidth = aceso ? 1.5 : 1;
 
-      final x = _margemDaArvore + nivel * _passo + 9;
+      // Centro da seta da pasta mae: o trilho desce dela.
+      final x = _margemDaArvore + nivel * _passo + 8;
       canvas.drawLine(Offset(x, 0), Offset(x, size.height), tinta);
     }
   }
 
   @override
   bool shouldRepaint(covariant _Trilhos old) =>
-      old.depth != depth || old.naTrilha != naTrilha || old.cor != cor;
+      old.depth != depth ||
+      old.naTrilha != naTrilha ||
+      old.cor != cor ||
+      old.corAtiva != corAtiva;
 }
 
 /// Menu do botao direito, aberto na posiçao do cursor.
@@ -235,15 +497,32 @@ Future<void> _menuDeContexto(
 }
 
 class _RootTile extends StatelessWidget {
-  const _RootTile({required this.root, required this.acoes});
+  const _RootTile({
+    required this.root,
+    required this.acoes,
+    required this.onRecolher,
+  });
 
   final VaultFolder root;
   final _Acoes acoes;
+  final VoidCallback onRecolher;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    final notas = root.noteCount;
+    final pastas = _contarPastas(root);
+
+    Widget botao(IconData icone, String dica, VoidCallback acao) => IconButton(
+      icon: Icon(icone, size: 17),
+      tooltip: dica,
+      color: scheme.onSurfaceVariant,
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+      padding: EdgeInsets.zero,
+      onPressed: acao,
+    );
 
     return DragTarget<VaultEntry>(
       onWillAcceptWithDetails: (d) => d.data.id != root.id,
@@ -254,47 +533,42 @@ class _RootTile extends StatelessWidget {
         ),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(
-            AppTheme.gapLg,
             AppTheme.gapMd,
+            AppTheme.gapMd,
+            AppTheme.gapXs,
             AppTheme.gapSm,
-            AppTheme.gapMd,
           ),
           child: Row(
             children: [
               Expanded(
-                child: Text(
-                  'VAULT',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    letterSpacing: 1.2,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      root.name,
+                      style: theme.textTheme.titleSmall,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      '$notas ${notas == 1 ? 'nota' : 'notas'} · '
+                      '$pastas ${pastas == 1 ? 'pasta' : 'pastas'}',
+                      style: theme.textTheme.labelSmall,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
               ),
-              _CountBadge(count: root.noteCount),
-              const SizedBox(width: AppTheme.gapXs),
-              IconButton(
-                icon: const Icon(Icons.create_new_folder_outlined, size: 16),
-                tooltip: 'Nova pasta na raiz do vault',
-                visualDensity: VisualDensity.compact,
-                constraints: const BoxConstraints.tightFor(
-                  width: 28,
-                  height: 28,
-                ),
-                padding: EdgeInsets.zero,
-                onPressed: () => acoes.onNewFolderIn(root),
+              botao(
+                Icons.add,
+                'Nova nota na raiz do vault',
+                () => acoes.onNewNoteInFolder(root),
               ),
-              IconButton(
-                icon: const Icon(Icons.add, size: 17),
-                tooltip: 'Nova nota na raiz do vault',
-                visualDensity: VisualDensity.compact,
-                constraints: const BoxConstraints.tightFor(
-                  width: 28,
-                  height: 28,
-                ),
-                padding: EdgeInsets.zero,
-                onPressed: () => acoes.onNewNoteInFolder(root),
+              botao(
+                Icons.create_new_folder_outlined,
+                'Nova pasta na raiz do vault',
+                () => acoes.onNewFolderIn(root),
               ),
+              botao(Icons.unfold_less, 'Recolher pastas', onRecolher),
             ],
           ),
         ),
@@ -352,11 +626,18 @@ class _CountBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Text(
-      '$count',
-      style: theme.textTheme.labelSmall?.copyWith(
-        color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
-        fontFeatures: const [FontFeature.tabularFigures()],
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        '$count',
+        style: theme.textTheme.labelSmall?.copyWith(
+          fontSize: 10.5,
+          fontFeatures: const [FontFeature.tabularFigures()],
+        ),
       ),
     );
   }
@@ -369,6 +650,7 @@ class _FolderTile extends StatefulWidget {
     required this.depth,
     required this.acoes,
     required this.naTrilha,
+    required this.cor,
   });
 
   final VaultFolder folder;
@@ -378,6 +660,9 @@ class _FolderTile extends StatefulWidget {
 
   /// Esta pasta esta no caminho ate a nota aberta.
   final bool naTrilha;
+
+  /// A cor do grupo de primeiro nivel a que a pasta pertence.
+  final Color? cor;
 
   @override
   State<_FolderTile> createState() => _FolderTileState();
@@ -407,25 +692,36 @@ class _FolderTileState extends State<_FolderTile> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final folder = widget.folder;
+    final vazia = folder.isEmpty;
+    // Com filtro tudo que sobrou esta la por um motivo: abre tudo.
+    final aberta = !vazia && (_expanded || widget.acoes.filtrando);
+    final cor = widget.cor ?? scheme.onSurfaceVariant;
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // Folga antes de cada pasta da raiz: separa os grupos sem precisar de
+        // divisoria.
+        if (widget.depth == 0) const SizedBox(height: 2),
         _Arrastavel(
-          entry: widget.folder,
+          entry: folder,
           pai: widget.pai,
           acoes: widget.acoes,
-          aceitaDentro: widget.folder,
+          aceitaDentro: folder,
           child: _HoverRow(
             onTap: () => setState(() => _expanded = !_expanded),
             onSecondaryTap: (posicao) => _menuDeContexto(
               context,
               posicao,
-              () => widget.acoes.onRenomear(widget.folder),
-              () => widget.acoes.onDelete(widget.folder),
+              () => widget.acoes.onRenomear(folder),
+              () => widget.acoes.onDelete(folder),
             ),
             depth: widget.depth,
             naTrilha: widget.naTrilha,
+            cor: widget.cor,
             builder: (hovered) => Row(
               children: [
                 // Seta rotaciona em vez de trocar de icone: a transiçao guia o
@@ -434,40 +730,42 @@ class _FolderTileState extends State<_FolderTile> {
                 // clicar nela para nao ver nada acontecer nao ajuda ninguem. O
                 // vao dela fica, para os nomes seguirem alinhados.
                 SizedBox(
-                  width: 15,
-                  child: widget.folder.isEmpty
+                  width: 16,
+                  child: vazia
                       ? null
                       : AnimatedRotation(
-                          turns: _expanded ? 0.25 : 0,
+                          turns: aberta ? 0.25 : 0,
                           duration: const Duration(milliseconds: 140),
                           child: Icon(
                             Icons.chevron_right,
-                            size: 15,
-                            color: theme.colorScheme.onSurfaceVariant,
+                            size: 16,
+                            color: scheme.onSurfaceVariant,
                           ),
                         ),
                 ),
-                const SizedBox(width: 3),
-                // Pasta aberta muda de icone: o desenho diz o mesmo que a
-                // seta, e e o que da para ler de canto de olho.
+                const SizedBox(width: 4),
+                // A pasta vazia fica so no contorno e com o nome apagado: num
+                // vault cheio de materias ainda por começar, e o que separa
+                // de relance onde ja ha algo escrito.
                 Icon(
-                  _expanded ? Icons.folder_open_rounded : Icons.folder_rounded,
-                  size: 14,
-                  color: widget.naTrilha
-                      ? theme.colorScheme.primary.withValues(alpha: 0.8)
-                      : theme.colorScheme.onSurfaceVariant,
+                  vazia
+                      ? Icons.folder_outlined
+                      : aberta
+                      ? Icons.folder_open_rounded
+                      : Icons.folder_rounded,
+                  size: 16,
+                  color: vazia ? cor.withValues(alpha: 0.45) : cor,
                 ),
                 const SizedBox(width: AppTheme.gapSm),
                 Expanded(
-                  child: Tooltip(
-                    message: widget.folder.name,
-                    waitDuration: const Duration(milliseconds: 600),
-                    child: Text(
-                      widget.folder.name,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                      overflow: TextOverflow.ellipsis,
+                  child: _Nome(
+                    texto: folder.name,
+                    filtro: widget.acoes.filtro,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: widget.depth == 0
+                          ? FontWeight.w600
+                          : FontWeight.w500,
+                      color: vazia ? scheme.onSurfaceVariant : scheme.onSurface,
                     ),
                   ),
                 ),
@@ -475,49 +773,54 @@ class _FolderTileState extends State<_FolderTile> {
                 // que cada linha carregue icones permanentes.
                 if (hovered) ...[
                   IconButton(
+                    icon: const Icon(Icons.add, size: 15),
+                    tooltip: 'Nova nota em ${folder.name}',
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 24,
+                      height: 24,
+                    ),
+                    padding: EdgeInsets.zero,
+                    onPressed: () => widget.acoes.onNewNoteInFolder(folder),
+                  ),
+                  IconButton(
                     icon: const Icon(
                       Icons.create_new_folder_outlined,
                       size: 14,
                     ),
-                    tooltip: 'Nova pasta em ${widget.folder.name}',
+                    tooltip: 'Nova pasta em ${folder.name}',
                     visualDensity: VisualDensity.compact,
                     constraints: const BoxConstraints.tightFor(
                       width: 24,
                       height: 24,
                     ),
                     padding: EdgeInsets.zero,
-                    onPressed: () => widget.acoes.onNewFolderIn(widget.folder),
+                    onPressed: () => widget.acoes.onNewFolderIn(folder),
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.add, size: 15),
-                    tooltip: 'Nova nota em ${widget.folder.name}',
-                    visualDensity: VisualDensity.compact,
-                    constraints: const BoxConstraints.tightFor(
-                      width: 24,
-                      height: 24,
-                    ),
-                    padding: EdgeInsets.zero,
-                    onPressed: () =>
-                        widget.acoes.onNewNoteInFolder(widget.folder),
-                  ),
-                ] else if (widget.folder.noteCount > 0)
+                ] else if (folder.noteCount > 0)
                   // Pasta vazia nao mostra `0`: em um vault com muitas pastas
                   // de matéria ainda por preencher, era uma coluna inteira de
                   // zeros disputando atençao com os nomes.
                   Padding(
                     padding: const EdgeInsets.only(
                       left: AppTheme.gapSm,
-                      right: AppTheme.gapSm,
+                      right: AppTheme.gapXs,
                     ),
-                    child: _CountBadge(count: widget.folder.noteCount),
+                    child: _CountBadge(count: folder.noteCount),
                   ),
               ],
             ),
           ),
         ),
-        if (_expanded)
-          for (final child in widget.folder.children)
-            _entryTile(child, widget.folder, widget.acoes, widget.depth + 1),
+        if (aberta)
+          for (final child in folder.children)
+            _entryTile(
+              child,
+              folder,
+              widget.acoes,
+              widget.depth + 1,
+              widget.cor,
+            ),
       ],
     );
   }
@@ -530,6 +833,7 @@ class _FileTile extends StatelessWidget {
     required this.depth,
     required this.acoes,
     required this.naTrilha,
+    required this.cor,
   });
 
   final VaultFile file;
@@ -540,6 +844,9 @@ class _FileTile extends StatelessWidget {
   /// Esta e a nota aberta. Vem de fora junto com as pastas do caminho, pela
   /// mesma conta.
   final bool naTrilha;
+
+  /// A cor do grupo de primeiro nivel, para o trilho.
+  final Color? cor;
 
   @override
   Widget build(BuildContext context) {
@@ -562,36 +869,33 @@ class _FileTile extends StatelessWidget {
         selected: selected,
         depth: depth,
         naTrilha: naTrilha,
+        cor: cor,
         builder: (hovered) => Row(
           children: [
             // O vao da seta que as pastas tem. Sem ele o nome da nota
             // começaria antes do nome das pastas irmas, e a coluna de nomes —
             // que e por onde o olho desce — sairia serrilhada.
-            const SizedBox(width: 18),
+            const SizedBox(width: 20),
             // A nota-tela tem o proprio icone: na arvore, "mapa" e "aula" sao
             // duas linhas iguais, e so ao abrir e que se descobria que uma
             // delas era uma area de desenho.
             Icon(
               file.desenhada ? Icons.gesture : Icons.description_outlined,
-              size: 14,
-              color: selected ? scheme.primary : scheme.onSurfaceVariant,
+              size: 15,
+              color: selected
+                  ? scheme.primary
+                  : scheme.onSurfaceVariant.withValues(alpha: 0.8),
             ),
             const SizedBox(width: AppTheme.gapSm),
             Expanded(
-              child: Tooltip(
-                message: file.title,
-                waitDuration: const Duration(milliseconds: 600),
-                child: Text(
-                  file.title,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: selected
-                        ? scheme.primary
-                        : hovered
-                        ? scheme.onSurface
-                        : scheme.onSurfaceVariant,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                  ),
-                  overflow: TextOverflow.ellipsis,
+              child: _Nome(
+                texto: file.title,
+                filtro: acoes.filtro,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: selected || hovered
+                      ? scheme.onSurface
+                      : scheme.onSurface.withValues(alpha: 0.82),
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
                 ),
               ),
             ),
@@ -693,6 +997,11 @@ class _ArrastavelState extends State<_Arrastavel> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+
+    // Com filtro a lista mostra so parte dos irmaos, e "soltar antes do
+    // proximo" apontaria para o vizinho errado. Arrastar fica para a arvore
+    // inteira.
+    if (widget.acoes.filtrando) return widget.child;
 
     return Draggable<VaultEntry>(
       data: widget.entry,
@@ -804,6 +1113,7 @@ class _HoverRow extends StatefulWidget {
     this.onSecondaryTap,
     this.selected = false,
     this.naTrilha = false,
+    this.cor,
   });
 
   final Widget Function(bool hovered) builder;
@@ -815,6 +1125,9 @@ class _HoverRow extends StatefulWidget {
   final int depth;
   final bool selected;
   final bool naTrilha;
+
+  /// Cor do grupo, que tinge os trilhos.
+  final Color? cor;
 
   @override
   State<_HoverRow> createState() => _HoverRowState();
@@ -844,8 +1157,10 @@ class _HoverRowState extends State<_HoverRow> {
         child: CustomPaint(
           painter: _Trilhos(
             depth: widget.depth,
-            cor: scheme.outline,
-            corAtiva: scheme.primary.withValues(alpha: 0.55),
+            cor: (widget.cor ?? scheme.onSurfaceVariant).withValues(
+              alpha: 0.18,
+            ),
+            corAtiva: (widget.cor ?? scheme.primary).withValues(alpha: 0.75),
             naTrilha: widget.naTrilha,
           ),
           child: Container(
@@ -856,15 +1171,15 @@ class _HoverRowState extends State<_HoverRow> {
             padding: EdgeInsets.only(
               left: _margemDaArvore - AppTheme.gapXs + widget.depth * _passo,
               right: AppTheme.gapXs,
-              top: 5,
-              bottom: 5,
+              top: 4,
+              bottom: 4,
             ),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(AppTheme.radiusSm),
               color: widget.selected
                   ? scheme.primaryContainer
                   : _hovered
-                  ? scheme.surfaceContainerHigh
+                  ? scheme.surfaceContainerHighest
                   : null,
             ),
             child: widget.builder(_hovered),

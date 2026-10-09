@@ -97,4 +97,88 @@ void main() {
 
     expect(alvo, same(sub));
   });
+
+  testWidgets('o filtro acha a nota sem acento e mostra o caminho', (
+    tester,
+  ) async {
+    const root = VaultFolder(
+      id: '/vault',
+      name: 'vault',
+      children: [
+        VaultFolder(
+          id: '/vault/Estudos',
+          name: 'Estudos',
+          children: [
+            VaultFile(id: '/vault/Estudos/Módulo 4.md', name: 'Módulo 4.md'),
+          ],
+        ),
+        VaultFile(id: '/vault/Tarefas.md', name: 'Tarefas.md'),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: NoteTree(
+            root: root,
+            selectedId: null,
+            onFileTap: (_) {},
+            onNewNoteInFolder: (_) {},
+            onNewFolderIn: (_) {},
+            onDelete: (_) {},
+            onRenomear: (_) {},
+            onMover: (_, _, {antesDe}) {},
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Tarefas'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'modulo');
+    await tester.pumpAndSettle();
+
+    expect(find.text('Estudos', findRichText: true), findsOneWidget);
+    expect(find.textContaining('Módulo 4', findRichText: true), findsOneWidget);
+    expect(find.text('Tarefas'), findsNothing);
+  });
+
+  testWidgets('recolher pastas fecha o que estava aberto', (tester) async {
+    const root = VaultFolder(
+      id: '/vault',
+      name: 'vault',
+      children: [
+        VaultFolder(
+          id: '/vault/Estudos',
+          name: 'Estudos',
+          children: [VaultFile(id: '/vault/Estudos/aula.md', name: 'aula.md')],
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: NoteTree(
+            root: root,
+            selectedId: null,
+            onFileTap: (_) {},
+            onNewNoteInFolder: (_) {},
+            onNewFolderIn: (_) {},
+            onDelete: (_) {},
+            onRenomear: (_) {},
+            onMover: (_, _, {antesDe}) {},
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Estudos'));
+    await tester.pumpAndSettle();
+    expect(find.text('aula'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Recolher pastas'));
+    await tester.pumpAndSettle();
+    expect(find.text('aula'), findsNothing);
+  });
 }
